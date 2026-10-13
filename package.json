@@ -14,6 +14,7 @@
     "pack": "npm run build && electron-builder --win dir",
     "dist": "npm run build && electron-builder --win nsis",
     "test:design": "python tests/validate_design_delivery.py",
+    "validate:delivery": "node scripts/validate-delivery-assets.mjs",
     "assets": "node scripts/prepare-assets.mjs"
   },
   "engines": { "node": ">=22.12.0" },
@@ -47,5 +48,6 @@
     "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true }
   }
 }
+
 
 
