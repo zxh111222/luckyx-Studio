@@ -13,6 +13,21 @@ test('桥接将UI与API图交给正确加载方法，不排队或执行生成',a
   const result=await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(app));assert.equal(result.loaded,true);assert.equal(result.format,format);assert.equal(calls.length,1);assert.equal(calls[0].method,format);assert.deepEqual(calls[0].graph,graph);assert.equal(queues,0);
  }
 });
+test('原生加载带文件名登记工作流，兼容新版前端的path读取并保留安全中文名称',async()=>{
+ for(const [format,graph] of [['ui',ui],['api',api]] as const){
+  let loaded:any;let registered:any;let uiFlags:any;let queues=0;
+  // Mirrors the native registration branch: undefined is taken as a workflow
+  // object, while a filename string creates a temporary workflow with a path.
+  const register=(filename:any)=>{const workflow=typeof filename==='string'?{path:filename}:filename;registered=workflow.path;};
+  const app={graph:{},loadGraphData:async(value:any,clear:any,restore:any,filename:any)=>{register(filename);loaded=value;uiFlags=[clear,restore];},loadApiJson:async(value:any,filename:any)=>{register(filename);loaded=value;},queuePrompt:()=>{queues++;}};
+  const context:any=sandbox(app);
+  const filename='我的流程 </script>"; globalThis.__filenameInjected=true; //';
+  const result=await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50,filename),context);
+  assert.equal(result.loaded,true);assert.deepEqual(loaded,graph);assert.equal(registered,sanitizeWorkflowFilename(filename));assert.ok(registered.startsWith('我的流程'));assert.equal(context.__filenameInjected,undefined);assert.equal(queues,0);
+  if(format==='ui')assert.deepEqual(uiFlags,[true,true]);
+  registered=undefined;await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),context);assert.equal(registered,'workflow.json');
+ }
+});
 test('UTF8提示词与脚本形文本按数据加载，不注入编辑器运行环境',async()=>{
  const graph={version:0.4,nodes:[{id:1,type:'Text',widgets_values:['中文😀 </script>"; globalThis.__injected = true; //\n` ${process.env.SECRET}']}],links:[]};let loaded:any;
  const context:any=sandbox({graph:{},loadGraphData:async(value:any)=>{loaded=value;}});await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),'ui',50),context);
@@ -61,9 +76,9 @@ test('UI或API加载器明确返回false时拒绝成功响应，旧版undefined�
 function editorManagerFixture(loadError?:Error){
  const instances:any[]=[];const records=new Map<string,any>(['first','second'].map(id=>[id,{metadata:{id,name:id,format:'ui'},json:JSON.stringify(ui)}]));const calls:{command:string;payload:any}[]=[];
  class FakeWindow extends EventEmitter {
-  destroyed=false;loadedGraph:any;loadCount=0;focusCount=0;currentUrl='';options:any;webContents:any;
+  destroyed=false;loadedGraph:any;loadedFilename:any;loadCount=0;focusCount=0;currentUrl='';options:any;webContents:any;
   constructor(options:any){super();this.options=options;instances.push(this);const events=new EventEmitter();const sessionEvents=new EventEmitter();const session:any={on:sessionEvents.on.bind(sessionEvents),clearStorageData:async()=>{},setPermissionRequestHandler:(handler:any)=>{session.permissionRequest=handler;},setPermissionCheckHandler:(handler:any)=>{session.permissionCheck=handler;},webRequest:{onBeforeRequest:(handler:any)=>{session.beforeRequest=handler;}}};
-   const app={graph:{serialize:()=>this.loadedGraph},loadGraphData:async(graph:any)=>{this.loadedGraph=graph;this.loadCount++;},loadApiJson:async(graph:any)=>{this.loadedGraph=graph;this.loadCount++;}};
+   const app={graph:{serialize:()=>this.loadedGraph},loadGraphData:async(graph:any,_clear:any,_restore:any,filename:any)=>{this.loadedGraph=graph;this.loadedFilename=filename;this.loadCount++;},loadApiJson:async(graph:any,filename:any)=>{this.loadedGraph=graph;this.loadedFilename=filename;this.loadCount++;}};
    this.webContents={session,on:events.on.bind(events),emit:events.emit.bind(events),setWindowOpenHandler:(handler:any)=>{this.webContents.popup=handler;},getURL:()=>this.currentUrl,isDestroyed:()=>this.destroyed,executeJavaScript:async(script:string)=>runInNewContext(script,sandbox(app))};
   }
   async loadURL(url:string){if(loadError)throw loadError;this.currentUrl=url;}isDestroyed(){return this.destroyed;}isMinimized(){return false;}restore(){}show(){}focus(){this.focusCount++;}destroy(){this.destroyed=true;this.emit('closed');}
@@ -73,7 +88,8 @@ function editorManagerFixture(loadError?:Error){
 }
 test('编辑窗口同ID复用保留未保存图，不同ID使用独立会话，保存只更新原ID',async()=>{
  const f=editorManagerFixture();try{
-  await Promise.all([f.manager.open('first','http://127.0.0.1:8188'),f.manager.open('first','http://127.0.0.1:8188')]);assert.equal(f.instances.length,1);const first=f.instances[0];assert.equal(first.loadCount,1);
+  f.records.get('first').metadata.name='我的工作流';
+  await Promise.all([f.manager.open('first','http://127.0.0.1:8188'),f.manager.open('first','http://127.0.0.1:8188')]);assert.equal(f.instances.length,1);const first=f.instances[0];assert.equal(first.loadCount,1);assert.equal(first.loadedFilename,'我的工作流.json');
   first.loadedGraph.nodes[0].widgets_values=['未保存修改'];const reused=await f.manager.open('first','http://127.0.0.1:8188');assert.equal(reused.reused,true);assert.equal(first.loadCount,1);assert.equal(first.loadedGraph.nodes[0].widgets_values[0],'未保存修改');
   await f.manager.open('second','http://127.0.0.1:8188');const second=f.instances[1];assert.equal(f.instances.length,2);assert.notEqual(first.options.webPreferences.partition,second.options.webPreferences.partition);assert.ok(!first.options.webPreferences.partition.startsWith('persist:'));
   await f.manager.save('first');const writes=f.calls.filter(call=>call.command==='workflow.update');assert.equal(writes.length,1);assert.equal(writes[0].payload.id,'first');assert.equal(JSON.parse(writes[0].payload.json).nodes[0].widgets_values[0],'未保存修改');assert.equal(JSON.parse(f.records.get('second').json).nodes[0].widgets_values[0],'中文提示词');assert.ok(f.calls.every(call=>['workflow.get','workflow.update'].includes(call.command)));

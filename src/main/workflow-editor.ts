@@ -12,7 +12,7 @@ function scriptTimeout(value: number): number {
 }
 
 /** Fixed self-contained page source; bundlers must not rewrite its dynamic import or closures. */
-const EDITOR_BRIDGE_SOURCE = String.raw`async function (encoded, format, action, timeoutMs, maxBytes) {
+const EDITOR_BRIDGE_SOURCE = String.raw`async function (encoded, format, action, timeoutMs, maxBytes, fileName) {
   const compatibilityError = '节点编辑器未就绪或 ComfyUI 前端版本不兼容，请更新前端，或在原生界面手动导入 JSON。'
   const deadline = Date.now() + timeoutMs
   let importedApp = null
@@ -52,18 +52,20 @@ const EDITOR_BRIDGE_SOURCE = String.raw`async function (encoded, format, action,
   const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0))
   const graph = JSON.parse(new TextDecoder().decode(bytes))
   // Loading and saving do not invoke queuePrompt or any execution endpoint.
+  // Native workflow registration requires a filename. In recent frontends an
+  // undefined API filename is treated as a workflow object and crashes on .path.
   const loaded = format === 'ui'
-    ? await wait(Promise.resolve(comfyApp.loadGraphData(graph)))
-    : await wait(Promise.resolve(comfyApp.loadApiJson(graph)))
+    ? await wait(Promise.resolve(comfyApp.loadGraphData(graph, true, true, fileName)))
+    : await wait(Promise.resolve(comfyApp.loadApiJson(graph, fileName)))
   if (loaded === false) throw new Error('原生编辑器无法载入此工作流，请检查节点与前端版本。')
   return { loaded: true, format }
 }`
 
-export function buildEditorLoadScript(json: string, format: WorkflowFormat, timeoutMs = 15000): string {
+export function buildEditorLoadScript(json: string, format: WorkflowFormat, timeoutMs = 15000, filename = 'workflow.json'): string {
   const parsed = parseWorkflowJson(json)
   if (!['ui', 'api'].includes(format) || parsed.format !== format) throw new Error('工作流格式与记录不一致')
   const encoded = Buffer.from(json, 'utf8').toString('base64')
-  return `(${EDITOR_BRIDGE_SOURCE})(${JSON.stringify(encoded)}, ${JSON.stringify(format)}, "load", ${scriptTimeout(timeoutMs)}, ${MAX_WORKFLOW_BYTES})`
+  return `(${EDITOR_BRIDGE_SOURCE})(${JSON.stringify(encoded)}, ${JSON.stringify(format)}, "load", ${scriptTimeout(timeoutMs)}, ${MAX_WORKFLOW_BYTES}, ${JSON.stringify(sanitizeWorkflowFilename(filename))})`
 }
 
 export function buildEditorSaveScript(timeoutMs = 5000): string {
@@ -140,7 +142,7 @@ export function createWorkflowEditorManager(options: {
         const origin = validateEngineUrl(engineUrl)
         const document = await options.service.invoke('workflow.get', { id }) as UserWorkflowDocument
         if (!document || typeof document.json !== 'string' || !document.metadata || document.metadata.id !== id) throw new Error('工作流文件无法读取')
-        const source = buildEditorLoadScript(document.json, document.metadata.format)
+        const source = buildEditorLoadScript(document.json, document.metadata.format, 15000, document.metadata.name)
         const parent = options.getParent()
         if (disposed || !parent || parent.isDestroyed()) throw new Error('启动器已关闭')
         const editor = new options.Window({
