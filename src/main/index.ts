@@ -57,6 +57,7 @@ async function native(command: string, payload: unknown) {
 
 app.whenReady().then(async () => {
   if (!single) return
+  if (process.platform === 'win32') app.setAppUserModelId('studio.luckyx.desktop')
   const dataDir = process.env.LUCKYX_DATA_DIR || (app.isPackaged ? join(app.getPath('userData'), 'studio') : resolve('.runtime/desktop'))
   service = await createStudioService({ dataDir })
   protocol.handle('luckyx', async request => {
@@ -71,7 +72,7 @@ app.whenReady().then(async () => {
   })
   window = new BrowserWindow({
     ...getWindowBounds(screen.getPrimaryDisplay().workAreaSize),
-    frame: false, title: 'luckyx. Studio', backgroundColor: '#101315', show: false,
+    frame: false, title: 'luckyx. Studio', icon: join(here, '../renderer/brand/icon-256.png'), backgroundColor: '#101315', show: false,
     webPreferences: { preload: join(here, '../preload/index.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false }
   })
   window.webContents.setWindowOpenHandler(({ url }) => {

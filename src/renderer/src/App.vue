@@ -162,12 +162,12 @@ onUnmounted(() => { closing = true; unsubscribe(); window.clearTimeout(toastTime
 <template>
   <div class="studio-app">
     <header class="titlebar">
-      <span>luckyx. Studio <span class="title-separator">·</span> 视频工作流启动器</span>
+      <span class="title-brand"><img src="/brand/luckyx-app.svg" width="20" height="20" alt="" />luckyx. Studio <span class="title-separator">·</span> 视频工作流启动器</span>
       <div class="title-actions"><span class="build-label">{{ desktop ? '本地创作' : '浏览器预览' }}</span><button :disabled="!desktop" aria-label="最小化窗口" @click="windowControl('minimize')"><PhMinus :size="16" /></button><button :disabled="!desktop" aria-label="最大化窗口" @click="windowControl('maximize')"><PhSquare :size="14" /></button><button class="window-close" :disabled="!desktop" aria-label="关闭窗口" @click="windowControl('close')"><PhX :size="16" /></button></div>
     </header>
     <div class="app-frame">
       <aside class="sidebar">
-        <a class="brand" href="#home" @click.prevent="navigate('home')"><strong>luckyx.</strong><span>Studio</span></a>
+        <a class="brand" href="#home" aria-label="luckyx. Studio 首页" @click.prevent="navigate('home')"><img class="brand-icon" src="/brand/luckyx-symbol.svg" width="32" height="32" alt="" /><span class="brand-wordmark"><strong>luckyx.</strong><span>Studio</span></span></a>
         <nav aria-label="主要导航"><button v-for="item in nav" :key="item.id" :class="['nav-item', { active: page === item.id }]" :aria-current="page === item.id ? 'page' : undefined" @click="navigate(item.id)"><component :is="item.icon" :size="21" weight="regular" /><span>{{ item.label }}</span></button></nav>
         <div class="sidebar-bottom"><button class="setup-link" @click="navigate('setup')"><PhFolderOpen :size="17" />连接已有环境<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><p>本地创作<br />素材留在你的电脑</p><span class="version">v0.1.0 · 开发预览</span></div>
       </aside>

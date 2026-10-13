@@ -160,3 +160,13 @@ dl > div { display: flex; align-items: baseline; gap: 16px; padding: 8px 0; }dt 
   h1 { font-size: 28px; }
 }
 
+/* Application identity: the approved X/play/dot symbol. */
+.title-brand { display: inline-flex; align-items: center; gap: 8px; }
+.title-brand img { display: block; flex-shrink: 0; }
+.title-brand .title-separator { margin: 0; }
+.brand { align-items: center; gap: 9px; margin-left: 2px; margin-right: 2px; font-size: 21px; letter-spacing: -.65px; }
+.brand-icon { display: block; flex-shrink: 0; }
+.brand-wordmark { display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; }
+@media (max-width: 1100px) { .brand { font-size: 19px; gap: 7px; }.brand-icon { width: 28px; height: 28px; } }
+@media (max-width: 1000px) { .brand-wordmark > span { display: none; } }
+@media (max-width: 760px) { .brand { justify-content: center; }.brand .brand-wordmark { display: none; }.brand-icon { width: 32px; height: 32px; } }
