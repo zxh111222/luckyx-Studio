@@ -6,3 +6,10 @@ dist/
 *.log
 *.tsbuildinfo
 __pycache__/
+docs/
+AGENTS.md
+*.md
+!README.md
+assets/*.prompt.txt
+tests/validate_design_delivery.py
+scripts/validate-delivery-assets.mjs
