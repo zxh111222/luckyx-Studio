@@ -1,0 +1,49 @@
+{
+  "name": "luckyx-studio",
+  "version": "0.1.0",
+  "description": "luckyx. Studio — 本地视频工作流启动器",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "preview": "tsx scripts/preview.ts",
+    "check": "vue-tsc --noEmit",
+    "build": "electron-vite build",
+    "test": "tsx --test tests/workflow.test.ts tests/service.test.ts",
+    "pack": "npm run build && electron-builder --win dir",
+    "dist": "npm run build && electron-builder --win nsis",
+    "test:design": "python tests/validate_design_delivery.py",
+    "assets": "node scripts/prepare-assets.mjs"
+  },
+  "engines": { "node": ">=22.12.0" },
+  "dependencies": {
+    "@phosphor-icons/vue": "2.2.1",
+    "sql.js": "1.14.2",
+    "vue": "3.5.44",
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "@types/sql.js": "1.4.9",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-vue": "5.2.4",
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "3.1.0",
+    "sharp": "0.35.5",
+    "tsx": "4.20.5",
+    "typescript": "5.9.3",
+    "vite": "6.4.1",
+    "vue-tsc": "3.3.13"
+  },
+  "build": {
+    "appId": "studio.luckyx.desktop",
+    "productName": "luckyx. Studio",
+    "directories": { "output": "dist" },
+    "files": ["out/**/*", "package.json"],
+    "asarUnpack": ["node_modules/sql.js/dist/*.wasm"],
+    "win": { "target": "nsis", "executableName": "luckyx. Studio" },
+    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true }
+  }
+}
