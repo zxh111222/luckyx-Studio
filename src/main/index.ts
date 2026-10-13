@@ -11,6 +11,8 @@ import { validateReferenceUrl } from '../shared/reference-url'
 import { createWorkflowEditorManager, sanitizeWorkflowFilename, type WorkflowEditorManager } from './workflow-editor'
 
 const here = dirname(fileURLToPath(import.meta.url))
+// Keep the existing data location stable across branding and version changes.
+app.setName('luckyx-studio')
 let window: BrowserWindow | null = null
 let service: StudioService
 let workflowEditors: WorkflowEditorManager | undefined

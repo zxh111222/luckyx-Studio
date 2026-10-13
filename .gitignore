@@ -13,3 +13,9 @@ AGENTS.md
 assets/*.prompt.txt
 tests/validate_design_delivery.py
 scripts/validate-delivery-assets.mjs
+
+# Local installer design previews (compiled BMPs remain tracked)
+build/installerHeader.png
+build/installerSidebar.png
+build/uninstallerSidebar.png
+build/nsis-brand-preview.png
