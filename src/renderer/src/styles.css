@@ -87,6 +87,9 @@ dl > div { display: flex; align-items: baseline; gap: 16px; padding: 8px 0; }dt 
 .completed-status { color: var(--accent); display: flex; align-items: center; gap: 8px; font-size: 12px; }.text-link { color: #92c8d9; display: inline-flex; align-items: center; gap: 10px; font-size: 12px; margin-left: 10px; padding-left: 20px; border-left: 1px solid var(--border); }
 .workbench-heading { display: flex; align-items: center; justify-content: space-between; }.workbench-header-actions { display: flex; align-items: center; gap: 20px; }.task-drawer-toggle { display: none; }
 .workbench-grid { display: grid; grid-template-columns: 320px minmax(0, 1fr) 272px; gap: 16px; align-items: start; }
+.workbench-page > .tabs { display:flex; gap:8px; margin-bottom:24px; border-bottom:1px solid var(--border); padding-bottom:12px; }
+.workbench-page > .tabs button { min-height:42px; padding:0 20px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted); font:inherit; cursor:pointer; }
+.workbench-page > .tabs button.active { background:#59dfb41a; border-color:#59dfb440; color:var(--accent); }
 .params-panel { padding: 20px; display: flex; flex-direction: column; height: calc(100vh - 212px); min-height: 560px; }.params-panel h2, .preview-panel h2, .task-summary h2 { font-size: 18px; margin-bottom: 20px; }
 .parameters-scroll { overflow-y: auto; min-height: 0; flex: 1; margin-right: -8px; padding-right: 8px; }.generation-action { flex-shrink: 0; }
 .upload-zone { display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; width: 100%; min-height: 170px; color: #b6c5d0; background: var(--control); border: 1px dashed #516575; border-radius: 8px; margin-bottom: 16px; }.upload-zone strong { color: var(--text); font-size: 13px; }.upload-zone span { font-size: 12px; }.upload-zone:hover { border-color: var(--accent); }

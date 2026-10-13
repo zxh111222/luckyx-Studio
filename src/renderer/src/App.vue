@@ -8,6 +8,7 @@ import {
   PhFilmStrip, PhSpinnerGap, PhShuffle
 } from '@phosphor-icons/vue'
 import SecondaryPages from '../components/SecondaryPages.vue'
+import VideoTransformStudio from '../components/VideoTransformStudio.vue'
 import { desktop, invoke, mediaUrl, subscribe } from './api'
 import type { GenerationParams, Snapshot, TaskRecord } from '../../shared/contracts'
 import { H3_RESOLUTIONS, H3_DURATIONS, h3FramesForSeconds, isVerifiedH3Configuration } from '../../shared/h3-parameters'
@@ -15,6 +16,7 @@ import { validateGenerationParams } from '../../shared/workflow'
 
 const state = ref<Snapshot | null>(null)
 const page = ref('home')
+const workbenchKind = ref('generate')
 const busy = ref(false)
 const bootError = ref('')
 const toast = ref('')
@@ -190,9 +192,9 @@ onUnmounted(() => { closing = true; unsubscribe(); window.clearTimeout(toastTime
       <aside class="sidebar">
         <a class="brand" href="#home" aria-label="luckyx. Studio 首页" @click.prevent="navigate('home')"><img class="brand-icon" src="/brand/luckyx-symbol.svg" width="32" height="32" alt="" /><span class="brand-wordmark"><strong>luckyx.</strong><span>Studio</span></span></a>
         <nav aria-label="主要导航"><button v-for="item in nav" :key="item.id" :class="['nav-item', { active: page === item.id }]" :aria-current="page === item.id ? 'page' : undefined" @click="navigate(item.id)"><component :is="item.icon" :size="21" weight="regular" /><span>{{ item.label }}</span></button></nav>
-        <div class="sidebar-bottom"><button class="setup-link" @click="navigate('setup')"><PhFolderOpen :size="17" />连接已有环境<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><p>本地创作<br />素材留在你的电脑</p><span class="version">v0.1.1 · 开发预览</span></div>
+        <div class="sidebar-bottom"><button class="setup-link" @click="navigate('setup')"><PhFolderOpen :size="17" />连接已有环境<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><p>本地创作<br />素材留在你的电脑</p><span class="version">v0.1.2 · 本地创作</span></div>
       </aside>
-      <main ref="mainContent" class="main-content" :class="{ 'workbench-main': page === 'workbench' }">
+      <main ref="mainContent" class="main-content" :class="{ 'workbench-main': page === 'workbench' && workbenchKind === 'generate' }">
         <div v-if="!state" class="boot-state"><PhSpinnerGap v-if="!bootError" :size="32" class="spinning" /><PhWarningCircle v-else :size="32" /><h1>{{ bootError ? '连接尚未完成' : '准备你的创作工作台' }}</h1><p class="muted">{{ bootError || '正在读取本地环境和任务记录…' }}</p><button v-if="bootError" class="btn primary" @click="refresh().then(() => bootError = '').catch(() => {})">重试连接</button></div>
         <section v-else-if="page === 'home'" class="home-page">
           <header class="page-heading"><h1>从一张图片，开始创作。</h1><p class="muted">选好工作流，剩下的交给工作台。</p></header>
@@ -201,8 +203,10 @@ onUnmounted(() => { closing = true; unsubscribe(); window.clearTimeout(toastTime
           <section class="home-recent"><div class="section-title-row"><h2 class="section-heading">最近作品</h2><button class="text-button" @click="navigate('tasks')">查看全部<PhCaretRight :size="15" /></button></div><div v-if="!completed.length" class="panel recent-empty"><PhFilmStrip :size="28" /><div><strong>第一段作品，从这里开始。</strong><p class="muted">完成的视频会自动保存在这里，随时预览和导出。</p></div><button class="text-button" @click="create">去创作<PhCaretRight :size="16" /></button></div><div v-else class="panel recent-list"><button v-for="task in completed.slice(0, 3)" :key="task.id" class="recent-row" @click="restore(task)"><PhFilmStrip :size="28" /><div><strong>{{ task.title }}</strong><p class="muted">{{ formatDate(task.createdAt) }} · MiniMax H3 {{ task.params.mode === 'text' ? '文生视频' : '图生视频' }}</p></div><span class="completed-status"><PhCheckCircle :size="18" weight="fill" />已完成</span><span class="text-link">打开作品<PhCaretRight :size="16" /></span></button></div></section>
         </section>
         <section v-else-if="page === 'workbench'" class="workbench-page">
-          <header class="page-heading workbench-heading"><div><h1>创作工作台</h1><p class="muted">MiniMax H3 · {{ params.mode === 'text' ? '文生视频' : '图生视频' }}</p></div><div class="workbench-header-actions"><button class="text-button task-drawer-toggle" @click="taskDrawer = !taskDrawer"><PhListBullets :size="18" />最近任务</button><button class="text-button" @click="run('native.openEngine')">打开原生界面<PhArrowSquareOut :size="17" /></button></div></header>
-          <div class="workbench-grid">
+          <header class="page-heading workbench-heading"><div><h1>创作工作台</h1><p class="muted">MiniMax H3 · {{ workbenchKind === 'transform' ? '风格 · 人物 · 背景' : params.mode === 'text' ? '文生视频' : '图生视频' }}</p></div><div class="workbench-header-actions"><button v-if="workbenchKind === 'generate'" class="text-button task-drawer-toggle" @click="taskDrawer = !taskDrawer"><PhListBullets :size="18" />最近任务</button><button class="text-button" @click="run('native.openEngine')">打开原生界面<PhArrowSquareOut :size="17" /></button></div></header>
+          <div class="tabs" role="tablist" aria-label="创作方式"><button role="tab" :aria-selected="workbenchKind === 'generate'" :class="{ active: workbenchKind === 'generate' }" @click="workbenchKind = 'generate'">生成视频</button><button role="tab" :aria-selected="workbenchKind === 'transform'" :class="{ active: workbenchKind === 'transform' }" @click="workbenchKind = 'transform'">改造视频</button></div>
+          <VideoTransformStudio v-if="workbenchKind === 'transform'" :snapshot="state" :busy="busy" @refresh="refresh" />
+          <div v-else class="workbench-grid">
             <form class="panel params-panel" @submit.prevent="submit">
               <h2>素材与参数</h2>
               <div class="parameters-scroll">
@@ -239,5 +243,6 @@ onUnmounted(() => { closing = true; unsubscribe(); window.clearTimeout(toastTime
     <div v-if="presetOpen" class="modal-backdrop" @click.self="presetOpen = false"><form class="panel preset-dialog" role="dialog" aria-modal="true" aria-labelledby="preset-title" @submit.prevent="savePreset"><h2 id="preset-title">保存参数预设</h2><p class="muted">保存提示词、分辨率与种子，不保存素材图片。</p><label class="field" for="preset-name"><span>预设名称</span><input id="preset-name" v-model="presetName" maxlength="60" autofocus placeholder="例如：森林慢镜头" /></label><div class="dialog-actions"><button class="btn secondary" type="button" @click="presetOpen = false">取消</button><button class="btn primary" type="submit" :disabled="busy || !presetName.trim()">保存预设</button></div></form></div>
   </div>
 </template>
+
 
 

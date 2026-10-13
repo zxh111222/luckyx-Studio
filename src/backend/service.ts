@@ -8,9 +8,10 @@ import initSqlJs from 'sql.js';
 import { createRequire } from 'node:module';
 import WebSocket from 'ws';
 import templateGraph from './workflows/h3-i2v.json';
-import type { Snapshot, StudioService, TaskRecord, Settings, GenerationParams, UserWorkflow, UserWorkflowDocument } from '../shared/contracts';
+import type { Snapshot, StudioService, TaskRecord, Settings, GenerationParams, UserWorkflow, UserWorkflowDocument, VideoRecipeEntry } from '../shared/contracts';
 import { validateEngineUrl, validateGenerationParams, validateImage, buildWorkflow, mapHistoryOutputs, isPromptRunning, safeOutputPath } from '../shared/workflow';
 import { parseWorkflowJson, validateWorkflowName, createEmptyWorkflowJson } from '../shared/workflow-library';
+import { videoRecipeDefinitions, MODEL_LOADER_FIELDS } from '../shared/video-recipes';
 const MODEL_SPECS = [['diffusion_models', 'minimax_h3_fl2va_pruned_int8_convrot.safetensors'], ['text_encoders', 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'], ['vae', 'minimax_h3_video_vae_int8_convrot.safetensors'], ['vae', 'minimax_h3_audio_vae_fp32.safetensors'], ['loras', 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors']];
 const activeStatuses = ['submitting', 'queued', 'running', 'unknown'];
 export async function createStudioService(options: {
@@ -446,7 +447,7 @@ export async function createStudioService(options: {
             throw new Error('工作流不存在或已移除');
         return { metadata: JSON.parse(String(row[0])) as UserWorkflow, json: String(row[1]) };
     }
-    async function importWorkflow(payload: unknown): Promise<UserWorkflow> {
+    async function importWorkflow(payload: unknown, recipeId?: string): Promise<UserWorkflow> {
         const input = payload as {
             name?: unknown;
             json?: unknown;
@@ -457,7 +458,7 @@ export async function createStudioService(options: {
             throw new Error('请提供工作流 JSON 文本');
         const parsed = parseWorkflowJson(json);
         const now = new Date().toISOString();
-        const metadata: UserWorkflow = { id: randomUUID(), name, format: parsed.format, nodeCount: parsed.nodeCount, createdAt: now, updatedAt: now };
+        const metadata: UserWorkflow = { ...(recipeId ? { recipeId } : {}), id: randomUUID(), name, format: parsed.format, nodeCount: parsed.nodeCount, createdAt: now, updatedAt: now };
         db.run('INSERT INTO user_workflows(id,metadata,json) VALUES(?,?,?)', [metadata.id, JSON.stringify(metadata), json]);
         snapshot.userWorkflows.unshift(metadata);
         await persist();
@@ -500,6 +501,62 @@ export async function createStudioService(options: {
         emit();
         return { id: metadata.id };
     }
+    async function recipes(): Promise<VideoRecipeEntry[]> {
+        let info: Record<string, any> | undefined;
+        try {
+            const stats = await api('/system_stats', {}, 3000);
+            if (!stats.system || !Array.isArray(stats.devices))
+                throw new Error('本机服务不是 ComfyUI');
+            info = await api('/object_info');
+        }
+        catch {
+            info = undefined;
+        }
+        return Promise.all(videoRecipeDefinitions.map(async (definition) => {
+            const { graph, ...entry } = definition;
+            const missingNodes = info ? [...new Set(Object.values(graph).map(node => node.class_type).filter(type => !info![type]))] : [];
+            const missingModels = new Set<string>();
+            const issues: string[] = info ? [] : ['引擎离线，无法确认节点和模型枚举'];
+            for (const model of definition.models) {
+                const target = path.join(snapshot.settings.modelPath, model.folder, model.name);
+                try {
+                    const stat = await fs.stat(target);
+                    if (!stat.isFile() || stat.size <= 0)
+                        throw new Error();
+                }
+                catch {
+                    missingModels.add(model.name);
+                }
+            }
+            if (info)
+                for (const node of Object.values(graph)) {
+                    const field = MODEL_LOADER_FIELDS[node.class_type];
+                    if (!field || !info[node.class_type])
+                        continue;
+                    const model = node.inputs[field];
+                    if (typeof model !== 'string')
+                        continue;
+                    const schema = info[node.class_type].input?.required?.[field] ?? info[node.class_type].input?.optional?.[field];
+                    const choices = Array.isArray(schema?.[0]) ? schema[0] : schema?.[1]?.options;
+                    if (!Array.isArray(choices) || !choices.includes(model))
+                        missingModels.add(model);
+                }
+            issues.push(...missingNodes.map(name => '缺少原生节点：' + name), ...[...missingModels].map(name => '缺少模型或引擎未识别：' + name));
+            return { ...structuredClone(entry), status: !info ? 'offline' : missingNodes.length || missingModels.size ? 'missing' : 'available', issues, missingNodes, missingModels: [...missingModels] } as VideoRecipeEntry;
+        }));
+    }
+    async function recipeImport(payload: unknown): Promise<UserWorkflow> {
+        const id = (payload as {
+            id?: unknown;
+        } | null)?.id;
+        const definition = videoRecipeDefinitions.find(recipe => recipe.id === id);
+        if (!definition)
+            throw new Error('请选择有效的视频改造工作流');
+        const existing = snapshot.userWorkflows.find(workflow => workflow.recipeId === definition.id);
+        if (existing)
+            return structuredClone(existing);
+        return importWorkflow({ name: definition.name, json: JSON.stringify(definition.graph, null, 2) }, definition.id);
+    }
     const service: StudioService = {
         async invoke(command, payload) {
             if (disposed)
@@ -507,6 +564,8 @@ export async function createStudioService(options: {
             switch (command) {
                 case 'snapshot': return structuredClone(snapshot);
                 case 'workflow.list': return structuredClone(snapshot.userWorkflows);
+                case 'workflow.recipes': return recipes();
+                case 'workflow.recipeImport': return recipeImport(payload);
                 case 'workflow.get': return workflowDocument(payload);
                 case 'workflow.import': return importWorkflow(payload);
                 case 'workflow.create': return importWorkflow({ name: (payload as {

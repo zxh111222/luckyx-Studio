@@ -95,6 +95,7 @@ export interface Preset {
 }
 export type WorkflowFormat = 'ui' | 'api';
 export interface UserWorkflow {
+    recipeId?: string;
     id: string;
     name: string;
     format: WorkflowFormat;
@@ -105,6 +106,24 @@ export interface UserWorkflow {
 export interface UserWorkflowDocument {
     metadata: UserWorkflow;
     json: string;
+}
+export interface VideoRecipeModel {
+    folder: string;
+    name: string;
+    url: string;
+}
+export interface VideoRecipeEntry {
+    id: string;
+    name: string;
+    description: string;
+    inputs: string[];
+    steps: string[];
+    sourceUrl: string;
+    models: VideoRecipeModel[];
+    status: 'offline' | 'missing' | 'available';
+    issues: string[];
+    missingNodes: string[];
+    missingModels: string[];
 }
 export interface Snapshot {
     settings: Settings;
