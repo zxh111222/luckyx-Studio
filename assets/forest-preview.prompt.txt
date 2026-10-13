@@ -1,0 +1,7 @@
+Built-in ImageGen generated design sample only; not an actual ComfyUI output.
+Reference: docs/定稿图/02-首页.png (composition and style only).
+Requested dimensions: 1280x720; actual native output: 1672x941, PNG, 2343764 bytes.
+Original retained: C:/Users/13058/.codex/generated_images/01a134e5-6fb4-75d0-84c6-1107d3f27136/exec-3f26dbcb-a5da-4c09-8fd8-6da745f56906.png
+
+Full prompt:
+Generate one new photorealistic-natural landscape image, a standalone cinematic sample still for the luckyx. Studio desktop video workflow launcher. The attached image is a UI design reference ONLY: match the large forest photograph's landscape composition, calm mood, lighting, and color direction, but create a fresh standalone image. Do NOT reproduce the screenshot, any UI, screen, device, panel, border, typography, labels, buttons, logos, watermark, or characters. Desired dimensions 1280x720, natural 16:9 horizontal composition. An elevated cinematic view across a dense pine forest at dawn, layered rolling forest hills receding into the distance, ribbons of soft atmospheric valley fog, detailed dark evergreen treetops in the foreground, pale warm golden sunlight breaking through softly textured clouds. Place the sun slightly right of center in the upper third, illuminating the mist. Premium, restrained, calm, realistic lens rendering, low saturation deep natural green, muted gray-blue fog, warm soft peach-gold sky. Realistic natural texture, believable distant hills, no fantasy elements, no humans, no buildings. Edge-to-edge landscape only, no frame.
