@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none" role="img" aria-label="luckyx 应用图标">
+  <rect width="1024" height="1024" rx="224" fill="#101315"/>
+  <defs>
+    <mask id="play-cutout" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="white"/>
+      <path d="M422 418 Q422 399 439 409 L558 478 Q575 488 558 499 L439 568 Q422 578 422 559 Z" fill="black"/>
+    </mask>
+  </defs>
+  <g fill="#5EE0B5" mask="url(#play-cutout)">
+    <path d="M682 264 H709 Q756 264 772 305 Q788 347 752 383 L377 722 Q346 750 305 750 H177 Q138 750 136 719 Q134 699 151 681 L646 282 Q662 264 682 264 Z"/>
+    <path d="M165 230 H308 Q344 230 370 257 L755 687 Q782 716 777 740 Q773 764 745 764 H636 Q596 764 568 736 L145 274 Q126 252 139 239 Q149 230 165 230 Z"/>
+  </g>
+  <circle cx="855" cy="723" r="39" fill="#5EE0B5"/>
+</svg>
+
