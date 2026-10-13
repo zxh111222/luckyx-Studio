@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises'
 import { createStudioService } from '../backend/service'
 import type { Settings, Snapshot, StudioService } from '../shared/contracts'
 import { getWindowBounds } from '../shared/window-bounds'
+import { validateReferenceUrl } from '../shared/reference-url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 let window: BrowserWindow | null = null
@@ -17,6 +18,7 @@ const single = app.requestSingleInstanceLock()
 if (!single) app.quit()
 
 async function native(command: string, payload: unknown) {
+  if (command === 'native.openReference') return shell.openExternal(validateReferenceUrl((payload as { url?: unknown })?.url))
   const snapshot = await service.invoke('snapshot') as Snapshot
   if (command === 'native.openEngine') return shell.openExternal(snapshot.settings.engineUrl)
   if (command === 'native.chooseDirectory') {

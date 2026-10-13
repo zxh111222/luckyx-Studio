@@ -1,4 +1,5 @@
 import type { Snapshot, OutputFile } from '../../shared/contracts'
+import { validateReferenceUrl } from '../../shared/reference-url'
 
 interface DesktopBridge {
   desktop: boolean
@@ -13,6 +14,11 @@ export const desktop = Boolean(window.luckyx?.desktop)
 export async function invoke<T = unknown>(command: string, payload?: unknown): Promise<T> {
   if (window.luckyx?.invoke) return await window.luckyx.invoke(command, payload) as T
   if (command.startsWith('native.')) {
+    if (command === 'native.openReference') {
+      const url = validateReferenceUrl((payload as { url?: unknown })?.url)
+      window.open(url, '_blank', 'noopener,noreferrer')
+      return undefined as T
+    }
     if (command === 'native.openEngine') {
       const state = await invoke<Snapshot>('snapshot')
       window.open(state.settings.engineUrl, '_blank', 'noopener,noreferrer')
