@@ -12,12 +12,16 @@ import type { Snapshot, StudioService, TaskRecord, Settings, GenerationParams, U
 import { validateEngineUrl, validateGenerationParams, validateImage, buildWorkflow, mapHistoryOutputs, isPromptRunning, safeOutputPath } from '../shared/workflow';
 import { parseWorkflowJson, validateWorkflowName, createEmptyWorkflowJson } from '../shared/workflow-library';
 import { videoRecipeDefinitions, MODEL_LOADER_FIELDS } from '../shared/video-recipes';
+import { getEngineInstallation } from './engine-installation';
+import { createBootstrapManager } from './bootstrap';
+import type { BootstrapPlan } from '../shared/bootstrap';
 const MODEL_SPECS = [['diffusion_models', 'minimax_h3_fl2va_pruned_int8_convrot.safetensors'], ['text_encoders', 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'], ['vae', 'minimax_h3_video_vae_int8_convrot.safetensors'], ['vae', 'minimax_h3_audio_vae_fp32.safetensors'], ['loras', 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors']];
 const activeStatuses = ['submitting', 'queued', 'running', 'unknown'];
 export async function createStudioService(options: {
     dataDir: string;
     defaultInstallationPath?: string;
     outputBaseUrl?: string;
+    sevenZipPath?: string;
 }): Promise<StudioService> {
     await fs.mkdir(options.dataDir, { recursive: true });
     const dbPath = path.join(options.dataDir, 'studio.sqlite');
@@ -34,7 +38,7 @@ export async function createStudioService(options: {
     const db = new SQL.Database(bytes);
     db.run('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     db.run('CREATE TABLE IF NOT EXISTS user_workflows (id TEXT PRIMARY KEY, metadata TEXT NOT NULL, json TEXT NOT NULL)');
-    const installationPath = options.defaultInstallationPath ?? 'F:/VideoModels/MiniMax-H3';
+    const installationPath = options.defaultInstallationPath ?? path.resolve(options.dataDir, 'environments/luckyx-environment');
     const snapshot: Snapshot = { settings: { installationPath, modelPath: path.join(installationPath, 'ComfyUI/models'), outputPath: path.join(options.dataDir, 'output'), inputPath: path.join(options.dataDir, 'input'), engineUrl: 'http://127.0.0.1:8188', initialized: false }, engine: { status: 'offline', managed: false, queue: 0, message: '尚未连接引擎' }, hardware: { gpuName: '检测中', vramMb: 0, ramGb: Math.round(os.totalmem() / 1024 ** 3), driver: '未知' }, templates: [{ id: 'h3-i2v', name: 'MiniMax H3 · 图生视频', description: '支持首帧或纯提示词，默认约 5.17 秒含音频视频', ready: false, issues: ['尚未验证运行节点'], models: MODEL_SPECS.map(x => x[1]), resolutions: [{ label: '864 × 480', width: 864, height: 480 }, { label: '832 × 480', width: 832, height: 480 }], defaultSteps: 4, frames: 124, fps: 24 }], tasks: [], resources: [], logs: [], presets: [], userWorkflows: [] };
     const rows = db.exec('SELECT key,value FROM state')[0]?.values ?? [];
     for (const [key, value] of rows) {
@@ -57,6 +61,10 @@ export async function createStudioService(options: {
     let child: ChildProcess | undefined;
     let socket: WebSocket | undefined;
     let disposed = false;
+    const bootstrap = createBootstrapManager({ dataDir: options.dataDir, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe') });
+    let bootstrapPlan: BootstrapPlan | undefined;
+    let bootstrapFlight: Promise<void> | undefined;
+    let bootstrapConnectionError: string | undefined;
     let refreshBusy = false;
     let startBusy = false;
     let startFlight: Promise<unknown> | undefined;
@@ -108,10 +116,9 @@ export async function createStudioService(options: {
                 return { id: name, name, path: file, sizeBytes: 0, status: 'missing' as const, kind: 'model' as const };
             }
         }));
-        const py = path.join(snapshot.settings.installationPath, 'venv/Scripts/python.exe');
         try {
-            const entries = await Promise.all([py, path.join(snapshot.settings.installationPath, 'ComfyUI/main.py'), path.join(snapshot.settings.installationPath, 'launch_comfy.py')].map(file => fs.stat(file)));
-            snapshot.settings.initialized = entries.every(entry => entry.isFile() && entry.size > 0);
+            await getEngineInstallation(snapshot.settings.installationPath);
+            snapshot.settings.initialized = true;
         }
         catch {
             snapshot.settings.initialized = false;
@@ -267,6 +274,7 @@ export async function createStudioService(options: {
         return startFlight;
     }
     async function startImpl() {
+        if (disposed) throw new Error('启动器已关闭');
         if (startBusy)
             return snapshot.engine;
         await refresh();
@@ -277,24 +285,14 @@ export async function createStudioService(options: {
         if (child)
             return snapshot.engine;
         const root = snapshot.settings.installationPath;
-        const python = path.join(root, 'venv/Scripts/python.exe');
-        const launcher = path.join(root, 'launch_comfy.py');
-        for (const file of [python, launcher, path.join(root, 'ComfyUI/main.py')]) {
-            try {
-                if (!(await fs.stat(file)).isFile())
-                    throw 0;
-            }
-            catch {
-                throw new Error('缺少启动文件：' + file);
-            }
-        }
+        const installation = await getEngineInstallation(root);
         for (const dir of [snapshot.settings.inputPath, snapshot.settings.outputPath, path.join(options.dataDir, 'comfy-user')])
             await fs.mkdir(dir, { recursive: true });
         startBusy = true;
         snapshot.engine.status = 'starting';
         snapshot.engine.message = '正在启动本地引擎';
         emit();
-        child = spawn(python, [launcher, '--listen', '127.0.0.1', '--port', '8188', '--reserve-vram', '1.5', '--cache-none', '--fast-disk', '--input-directory', snapshot.settings.inputPath, '--output-directory', snapshot.settings.outputPath, '--user-directory', path.join(options.dataDir, 'comfy-user')], { cwd: root, windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', HF_HOME: path.join(root, 'cache/huggingface'), PYTHONDONTWRITEBYTECODE: '1' } });
+        child = spawn(installation.python, [...installation.args, '--listen', '127.0.0.1', '--port', '8188', '--reserve-vram', '1.5', '--cache-none', '--input-directory', snapshot.settings.inputPath, '--output-directory', snapshot.settings.outputPath, '--user-directory', path.join(options.dataDir, 'comfy-user')], { cwd: installation.cwd, windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', HF_HOME: path.join(root, 'cache/huggingface'), PYTHONDONTWRITEBYTECODE: '1' } });
         snapshot.engine.managed = true;
         snapshot.engine.pid = child.pid;
         child.stdout?.on('data', b => log('info', b.toString().trim().slice(-1000)));
@@ -386,6 +384,8 @@ export async function createStudioService(options: {
         return structuredClone(task);
     }
     async function saveSettings(payload: unknown) {
+        if (bootstrapFlight)
+            throw new Error('正在安装环境，请完成或暂停后再修改连接设置');
         if (child)
             throw new Error('请先停止由启动器管理的引擎，再修改设置');
         const next = { ...snapshot.settings, ...payload as Partial<Settings> };
@@ -562,6 +562,38 @@ export async function createStudioService(options: {
             if (disposed)
                 throw new Error('启动器已关闭');
             switch (command) {
+                case 'bootstrap.status': return { ...bootstrap.snapshot(), ...(bootstrapConnectionError ? { error: bootstrapConnectionError } : {}) };
+                case 'bootstrap.plan': {
+                    if (bootstrapFlight) throw new Error('安装正在进行');
+                    const p = payload as { rootPath?: unknown; profile?: unknown } | null;
+                    if (typeof p?.rootPath !== 'string' || (p.profile !== undefined && !['environment', 'h3'].includes(String(p.profile)))) throw new Error('请选择安装目录和安装内容');
+                    bootstrapPlan = undefined;
+                    bootstrapPlan = await bootstrap.plan({ rootPath: p.rootPath, hardware: snapshot.hardware, ...{ profile: (p.profile ?? 'h3') as 'environment' | 'h3' } });
+                    bootstrapConnectionError = undefined;
+                    return bootstrapPlan;
+                }
+                case 'bootstrap.cancel': return bootstrap.cancel();
+                case 'bootstrap.start': {
+                    if (bootstrapFlight) return { started: true };
+                    if (!bootstrapPlan) throw new Error('请先检查安装条件');
+                    await refresh();
+                    if (child || ['ready', 'busy'].includes(snapshot.engine.status) || snapshot.tasks.some(t => activeStatuses.includes(t.status))) throw new Error('请先停止现有引擎并完成任务，再安装和切换新环境');
+                    const plan = bootstrapPlan;
+                    bootstrapConnectionError = undefined;
+                    bootstrapFlight = (async () => {
+                        const result = await bootstrap.start(plan);
+                        if (result.status !== 'completed' || !result.installationPath || disposed) return;
+                        snapshot.settings = { ...snapshot.settings, installationPath: result.installationPath, modelPath: path.join(result.installationPath, 'ComfyUI/models'), engineUrl: 'http://127.0.0.1:8188' };
+                        await scan(); await persist();
+                        await start();
+                        const deadline = Date.now() + 90000;
+                        while (!disposed && Date.now() < deadline && child && !['ready', 'busy'].includes(snapshot.engine.status)) { await new Promise(resolve => setTimeout(resolve, 1000)); await refresh(); }
+                        if (!['ready', 'busy'].includes(snapshot.engine.status)) throw new Error('文件已安装，但引擎未就绪。请查看启动日志或使用手动教程。');
+                        if (plan.files.some(f => f.kind === 'model')) { await validate(); if (!snapshot.templates[0].ready) throw new Error('文件已安装，但 H3 节点检查未通过。请在资源中心查看缺失项和官方教程。'); }
+                        log('info', '一键安装完成，已连接本地 ComfyUI');
+                    })().catch(error => { bootstrapConnectionError = error instanceof Error ? error.message : '安装连接失败，请查看教程'; log('error', bootstrapConnectionError); }).finally(() => { bootstrapFlight = undefined; emit(); });
+                    return { started: true };
+                }
                 case 'snapshot': return structuredClone(snapshot);
                 case 'workflow.list': return structuredClone(snapshot.userWorkflows);
                 case 'workflow.recipes': return recipes();
@@ -651,7 +683,7 @@ export async function createStudioService(options: {
             const query = new URLSearchParams({ filename: output.filename, subfolder: output.subfolder, type: 'output' });
             return { url: snapshot.settings.engineUrl + '/view?' + query, filename: output.filename };
         },
-        async dispose() { disposed = true; clearInterval(timer); socket?.close(); listeners.clear(); await writes; db.close(); }
+        async dispose() { disposed = true; clearInterval(timer); socket?.close(); listeners.clear(); await bootstrap.dispose(); await bootstrapFlight; await writes; db.close(); }
     };
     const timer = setInterval(() => { void refresh().catch(() => { }); }, 2500);
     timer.unref();

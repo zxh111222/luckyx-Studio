@@ -22,6 +22,10 @@ const single = app.requestSingleInstanceLock()
 if (!single) app.quit()
 
 async function native(command: string, payload: unknown) {
+  if (command === 'native.bootstrapDirectory') {
+    const choice = await dialog.showOpenDialog(window!, { title: '选择环境安装磁盘或目录', properties: ['openDirectory', 'createDirectory'] })
+    return choice.canceled ? false : choice.filePaths[0]
+  }
   if (command === 'native.openReference') return shell.openExternal(validateReferenceUrl((payload as { url?: unknown })?.url))
   if (command === 'native.exportWorkflow') {
     const id = (payload as { id?: unknown })?.id
@@ -80,7 +84,7 @@ app.whenReady().then(async () => {
   if (!single) return
   if (process.platform === 'win32') app.setAppUserModelId('studio.luckyx.desktop')
   const dataDir = process.env.LUCKYX_DATA_DIR || (app.isPackaged ? join(app.getPath('userData'), 'studio') : resolve('.runtime/desktop'))
-  service = await createStudioService({ dataDir })
+  service = await createStudioService({ dataDir, sevenZipPath: app.isPackaged ? join(process.resourcesPath, 'bootstrap/7za.exe') : resolve('node_modules/7zip-bin/win/x64/7za.exe') })
   protocol.handle('luckyx', async request => {
     try {
       const url = new URL(request.url)

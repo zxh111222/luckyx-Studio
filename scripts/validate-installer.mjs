@@ -100,5 +100,13 @@ await section('快捷方式独立ICO资源与品牌源一致',async()=>{
  check(installed.equals(expected),'resources/app-icon.ico与品牌ICO不一致或过期');
  check(installed.readUInt16LE(0)===0&&installed.readUInt16LE(2)===1&&installed.readUInt16LE(4)===7,'独立图标不是完整的七尺寸ICO');
 });
+await section('首次安装解压器和许可文件已随程序打包',async()=>{
+ const expected=await fs.readFile(path.join(root,'node_modules/7zip-bin/win/x64/7za.exe'));
+ const shipped=await fs.readFile(path.join(unpacked,'resources/bootstrap/7za.exe'));
+ check(shipped.equals(expected),'7za.exe缺失或与固定依赖不一致');
+ check(shipped.subarray(0,2).toString()==='MZ','解压器不是Windows可执行文件');
+ const license=await fs.readFile(path.join(unpacked,'resources/bootstrap/7zip-bin-LICENSE.txt'),'utf8');
+ check(license.includes('MIT License'),'解压器依赖许可文件缺失');
+});
 console.log('本检查未执行安装、卸载或生成任务；不能代替干净电脑安装和实际启动验收。');
 if(errors.length){for(const error of errors)console.error(`FAIL ${error}`);process.exitCode=1;}else console.log(`PASS ${unpackedOnly?'解包运行目录':'安装交付'}结构验证通过。`);

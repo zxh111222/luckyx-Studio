@@ -9,6 +9,8 @@ const service = await createStudioService({ dataDir: resolve('.runtime/userData'
 const commands = new Set(['snapshot', 'engine.start', 'engine.stop', 'engine.restart', 'settings.save', 'task.submit', 'task.cancel', 'task.retry', 'tasks.refresh', 'preset.save', 'diagnostics.run', 'template.validate', 'resource.scan', 'logs.clear', 'workflow.create', 'workflow.import', 'workflow.list', 'workflow.get', 'workflow.update', 'workflow.rename', 'workflow.remove'])
 commands.add('workflow.recipes')
 commands.add('workflow.recipeImport')
+commands.add('bootstrap.status')
+commands.add('bootstrap.plan')
 const allowedOrigins = new Set(['http://127.0.0.1:4173', 'http://localhost:4173'])
 const server = createHttpServer(async (request, response) => {
   response.setHeader('X-Content-Type-Options', 'nosniff')

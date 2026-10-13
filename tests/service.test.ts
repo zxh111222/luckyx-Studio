@@ -126,3 +126,12 @@ test('文生视频失败可无图片重试，任务与预设的生成方式重�
  await f.service.invoke('preset.save',{name:'文生视频预设',params:text});await f.service.dispose();const restored=await createStudioService({dataDir:path.join(f.dir,'data'),defaultInstallationPath:f.installationPath});f.replace(restored);
  const snapshot=await restored.invoke('snapshot') as Snapshot;assert.equal(snapshot.presets[0].params.mode,'text');assert.equal(snapshot.presets[0].params.image,undefined);assert.ok(snapshot.tasks.every(t=>t.params.mode==='text'&&t.params.image===undefined));assert.equal(f.state.calls.filter(c=>c.url==='/upload/image').length,0);assert.equal(f.state.calls.filter(c=>c.url==='/prompt').length,2);
 });
+
+test('首次安装接口需有效计划，不改动已有设置与作品',async t=>{
+ const f=await fixture(t);const before=await f.service.invoke('snapshot') as Snapshot;
+ const status=await f.service.invoke('bootstrap.status') as {status:string};assert.equal(status.status,'idle');
+ await assert.rejects(f.service.invoke('bootstrap.start'),/先检查安装条件/);
+ await assert.rejects(f.service.invoke('bootstrap.plan',{rootPath:f.dir,profile:'arbitrary'}),/安装目录和安装内容/);
+ await assert.rejects(f.service.invoke('bootstrap.plan',{rootPath:'relative',profile:'environment'}),/绝对安装目录/);
+ const after=await f.service.invoke('snapshot') as Snapshot;assert.deepEqual(after.settings,before.settings);assert.deepEqual(after.tasks,before.tasks);assert.equal(f.state.calls.filter(c=>c.url==='/prompt').length,0);
+});

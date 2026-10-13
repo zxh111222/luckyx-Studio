@@ -4,6 +4,7 @@ import { PhCpu, PhFolderOpen, PhMagnifyingGlass, PhPlay, PhCheckCircle, PhWarnin
 import type { Snapshot, OutputFile, TaskRecord, Settings, TaskStatus } from '../../shared/contracts'
 import ModelRecommendations from './ModelRecommendations.vue'
 import WorkflowLibrary from './WorkflowLibrary.vue'
+import BootstrapSetup from './BootstrapSetup.vue'
 
 const props = defineProps<{ page: string; snapshot: Snapshot; busy: boolean; mediaUrl: (output: OutputFile) => string }>()
 const emit = defineEmits<{ action: [command: string, payload?: unknown]; create: []; restore: [task: TaskRecord] }>()
@@ -65,14 +66,15 @@ watch(() => props.page, () => { query.value = ''; pathError.value = '' })
 
 <template>
   <section v-if="page === 'setup'" class="secondary-page">
-    <header class="page-heading"><p class="eyebrow">开始创作 · 本地环境</p><h1>连接你的本地创作环境</h1><p class="muted">复用已经安装的 ComfyUI，让第一段视频更快开始。</p></header>
+    <header class="page-heading"><p class="eyebrow">开始创作 · 本地环境</p><h1>准备你的创作环境</h1><p class="muted">第一次使用可以自动安装；已有 ComfyUI 直接连接。</p></header>
     <div class="panel hardware-strip"><PhCpu :size="30" /><div><strong>{{ gpu }}</strong><p class="muted">{{ vram }} · {{ snapshot.hardware.ramGb > 0 ? `${snapshot.hardware.ramGb.toFixed(0)} GB 内存` : '内存待检测' }}</p></div><span class="badge">{{ snapshot.hardware.driver ? `驱动 ${snapshot.hardware.driver}` : '驱动待检测' }}</span></div>
-    <h2 class="section-heading">本地路径</h2>
+    <BootstrapSetup :snapshot="snapshot" @complete="emit('action', 'snapshot')" @create="emit('create')" />
+    <h2 class="section-heading">连接已有环境</h2>
     <form class="panel path-panel" @submit.prevent="save">
       <div v-for="field in pathFields" :key="field.key" class="path-row"><label :for="`setup-${field.key}`">{{ field.label }}</label><div><input :id="`setup-${field.key}`" v-model="draft[field.key]" class="input" :disabled="busy" spellcheck="false" /><p class="path-hint muted">{{ field.hint }}</p></div><button class="btn secondary" type="button" :disabled="busy" @click="emit('action', 'native.chooseDirectory', { field: field.key })"><PhFolderOpen :size="17" />选择目录</button></div>
       <div class="path-row"><label for="setup-url">服务地址</label><div><input id="setup-url" v-model="draft.engineUrl" class="input" :disabled="busy" spellcheck="false" /><p class="path-hint muted">仅连接本机服务，默认端口 8188</p></div></div>
       <p v-if="pathError" class="error" role="alert">{{ pathError }}</p>
-      <div class="form-footer"><p class="muted"><PhInfo :size="17" />本阶段支持已有环境接入；新电脑自动下载尚未开放。</p><button class="btn primary" type="submit" :disabled="busy"><PhCheckCircle :size="18" />{{ busy ? '检查中…' : '保存并检查' }}</button></div>
+      <div class="form-footer"><p class="muted"><PhInfo :size="17" />已有环境无需重复下载；检查路径后即可连接。</p><button class="btn primary" type="submit" :disabled="busy"><PhCheckCircle :size="18" />{{ busy ? '检查中…' : '保存并检查' }}</button></div>
     </form>
     <div class="panel setup-template"><img src="/forest-preview.webp" alt="雾林晨光，静态模板示例" /><div><h3>MiniMax H3 · 图生视频</h3><p class="muted">上传图片和提示词，生成带音轨的 MP4 视频。</p><small class="muted">封面为设计示例，实际输出取决于你的素材和参数。</small></div><div class="template-stat"><span class="muted">本地资源文件</span><strong>{{ installed }} / {{ snapshot.resources.length }}</strong><small class="muted">文件存在不代表完整性校验通过</small></div></div>
   </section>
@@ -130,6 +132,8 @@ button:focus-visible,summary:focus-visible { outline: 2px solid var(--accent); o
 @media(max-width:1150px) { .library-card { grid-template-columns: minmax(0,1.25fr) minmax(260px,1fr); gap: 20px; }.template-image { min-height: 320px; }.task-layout { grid-template-columns: 1fr 1fr; gap: 20px; }.preview-column { padding-left: 20px; }.resource-layout { grid-template-columns: minmax(0,1fr); }.resource-side { display: block; }.setup-template { flex-wrap: wrap; }.template-stat { margin-left: 0; }.path-row { grid-template-columns: 90px minmax(0,1fr) 116px; gap: 12px; }.node-progress { flex-wrap: wrap; }.task-select > svg { display: none; } }
 @media(max-width:900px) { .library-card,.task-layout { grid-template-columns: 1fr; }.template-image { min-height: 0; aspect-ratio: 16/9; }.preview-column { border-left: 0; border-top: 1px solid var(--border); padding: 24px 0 0; }.heading-with-action,.form-footer { align-items: flex-start; flex-direction: column; }.path-row { grid-template-columns: 1fr 116px; }.path-row > label { grid-column: 1/-1; line-height: 1.3; }.hardware-strip { flex-wrap: wrap; }.hardware-strip .badge { margin-left: 0; }.tab-toolbar { flex-wrap: wrap; }.compact { width: 100%; } }
 </style>
+
+
 
 
 
