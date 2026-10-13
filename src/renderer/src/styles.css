@@ -170,3 +170,5 @@ dl > div { display: flex; align-items: baseline; gap: 16px; padding: 8px 0; }dt 
 @media (max-width: 1100px) { .brand { font-size: 19px; gap: 7px; }.brand-icon { width: 28px; height: 28px; } }
 @media (max-width: 1000px) { .brand-wordmark > span { display: none; } }
 @media (max-width: 760px) { .brand { justify-content: center; }.brand .brand-wordmark { display: none; }.brand-icon { width: 32px; height: 32px; } }
+.parameter-note { font-size:12px;line-height:1.7;color:var(--muted);margin:8px 0 16px;overflow-wrap:anywhere; }
+.parameter-note.error { color:var(--danger, #ff9a9a); }

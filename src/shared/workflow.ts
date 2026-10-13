@@ -1,5 +1,6 @@
 import template from '../backend/workflows/h3-i2v.json';
 import type { GenerationParams, OutputFile } from './contracts';
+import { H3_MAX_PIXELS } from './h3-parameters';
 export type ApiWorkflow = Record<string, {
     class_type: string;
     inputs: Record<string, unknown>;
@@ -19,16 +20,20 @@ export function validateEngineUrl(value: string): string {
 export function validateGenerationParams(value: unknown): GenerationParams {
     const p = value as GenerationParams;
     if (!p || p.templateId !== 'h3-i2v')
-        throw new Error('请选择 MiniMax H3 图生视频模板');
+        throw new Error('请选择 MiniMax H3 视频模板');
+    if (p.mode !== undefined && p.mode !== 'image' && p.mode !== 'text')
+        throw new Error('请选择首帧图生视频或纯提示词文生视频模式');
     if (typeof p.prompt !== 'string' || !p.prompt.trim() || p.prompt.length > 10000)
         throw new Error('请填写提示词（最多 10000 字符）');
-    if (!([864, 832].includes(p.width) && p.height === 480))
-        throw new Error('首版仅支持 864×480 或 832×480');
-    if (p.frames !== 124 || p.steps !== 4)
-        throw new Error('首版固定 124 帧、4 步 Turbo');
+    if (![p.width, p.height].every(value => Number.isInteger(value) && value >= 256 && value <= 2048 && value % 32 === 0) || p.width * p.height > H3_MAX_PIXELS)
+        throw new Error('宽高需为 256～2048 内的 32 倍数，总像素不能超过 1344×768');
+    if (!Number.isInteger(p.frames) || p.frames < 5 || p.frames > 362 || (p.frames - 5) % 17 !== 0)
+        throw new Error('帧数需在 5～362 内，并按 17n+5 对齐');
+    if (p.steps !== 4)
+        throw new Error('当前 Turbo 模板固定 4 步');
     if (!Number.isSafeInteger(p.seed) || p.seed < 0)
         throw new Error('种子必须为非负安全整数');
-    return { ...p, prompt: p.prompt.trim() };
+    return { ...p, mode: p.mode ?? 'image', prompt: p.prompt.trim() };
 }
 export function validateImage(image: GenerationParams['image']): {
     bytes: Uint8Array;
@@ -57,7 +62,10 @@ export function buildWorkflow(params: GenerationParams, uploadedName: string, ta
     Object.assign(graph['6'].inputs, { prompt: p.prompt, width: p.width, height: p.height, length: p.frames });
     graph['7'].inputs.noise_seed = p.seed;
     graph['10'].inputs.steps = p.steps;
-    graph['16'].inputs.image = uploadedName;
+    if (p.mode === 'text') {
+        delete graph['16'];
+        delete graph['6'].inputs.first_frame;
+    } else graph['16'].inputs.image = uploadedName;
     graph['15'].inputs.filename_prefix = `luckyx/${taskId}`;
     return graph;
 }

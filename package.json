@@ -1,6 +1,6 @@
 {
   "name": "luckyx-studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "luckyx. Studio — 本地视频工作流启动器",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "preview": "tsx scripts/preview.ts",
     "check": "vue-tsc --noEmit",
     "build": "electron-vite build",
-    "test": "tsx --test tests/workflow.test.ts tests/service.test.ts tests/window-bounds.test.ts tests/model-recommendations.test.ts tests/reference-url.test.ts tests/brand-assets.test.ts tests/public-asset.test.ts tests/model-covers.test.ts",
+    "test": "tsx --test tests/workflow.test.ts tests/service.test.ts tests/window-bounds.test.ts tests/model-recommendations.test.ts tests/reference-url.test.ts tests/brand-assets.test.ts tests/public-asset.test.ts tests/model-covers.test.ts tests/workflow-library.test.ts tests/h3-parameters.test.ts tests/workflow-editor.test.ts",
     "pack": "npm run build && electron-builder --win dir",
     "dist": "npm run build && electron-builder --win nsis",
     "validate:installer": "node scripts/validate-installer.mjs",

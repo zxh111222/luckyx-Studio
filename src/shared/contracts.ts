@@ -21,6 +21,7 @@ export interface Hardware {
     driver: string;
 }
 export interface GenerationParams {
+    mode?: 'image' | 'text';
     prompt: string;
     width: number;
     height: number;
@@ -92,6 +93,19 @@ export interface Preset {
     name: string;
     params: GenerationParams;
 }
+export type WorkflowFormat = 'ui' | 'api';
+export interface UserWorkflow {
+    id: string;
+    name: string;
+    format: WorkflowFormat;
+    nodeCount: number;
+    createdAt: string;
+    updatedAt: string;
+}
+export interface UserWorkflowDocument {
+    metadata: UserWorkflow;
+    json: string;
+}
 export interface Snapshot {
     settings: Settings;
     engine: EngineState;
@@ -101,6 +115,7 @@ export interface Snapshot {
     resources: Resource[];
     logs: LogEntry[];
     presets: Preset[];
+    userWorkflows: UserWorkflow[];
 }
 export interface StudioService {
     invoke(command: string, payload?: unknown): Promise<unknown>;

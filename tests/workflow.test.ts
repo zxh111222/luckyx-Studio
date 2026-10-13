@@ -9,10 +9,10 @@ test('引擎仅接受无认证、无路径的本机 HTTP 地址',()=>{
  for(const url of ['http://127.0.0.1:8188','http://localhost:8188/','http://[::1]:8188']) assert.equal(validateEngineUrl(url),new URL(url).origin);
  for(const url of ['https://localhost:8188','http://example.com','http://127.0.0.1.evil.test','http://user:secret@localhost:8188','http://localhost:8188/api','http://localhost:8188/?token=x','http://localhost/#x','file:///tmp/x','invalid']) assert.throws(()=>validateEngineUrl(url),Error,url);
 });
-test('首版参数保留合法模板规格并拒绝未验证参数',()=>{
+test('参数保留合法模板规格并拒绝超出约束的输入',()=>{
  assert.equal(validateGenerationParams(params).prompt,'镜头缓缓前移');
  assert.equal(validateGenerationParams({...params,width:832}).width,832);
- for(const patch of [{templateId:'unknown'},{prompt:' '},{prompt:'x'.repeat(10001)},{width:1280},{height:720},{frames:125},{steps:8},{seed:-1},{seed:1.1},{seed:Number.MAX_SAFE_INTEGER+1}]) assert.throws(()=>validateGenerationParams({...params,...patch}),Error);
+ for(const patch of [{templateId:'unknown'},{prompt:' '},{prompt:'x'.repeat(10001)},{width:2080},{height:720},{frames:125},{steps:8},{seed:-1},{seed:1.1},{seed:Number.MAX_SAFE_INTEGER+1}]) assert.throws(()=>validateGenerationParams({...params,...patch}),Error);
  assert.throws(()=>validateGenerationParams(null),Error);
  assert.equal(params.prompt,' 镜头缓缓前移 ');
 });
@@ -49,4 +49,9 @@ test('取消判定仅匹配指定运行任务，不把排队或别人的任务�
  assert.equal(isPromptRunning(queue,'my-task'),false); assert.equal(isPromptRunning(queue,'someone-else'),true);
  assert.equal(isPromptRunning({queue_running:[[0,'my-task',{},{}]]},'my-task'),true);
  assert.equal(isPromptRunning(undefined,'my-task'),false);
+});
+
+test('文生视频去掉首帧节点与输入；非法生成方式拒绝而历史默认图生兼容',()=>{
+ const graph=buildWorkflow({...params,mode:'text'} as any,'','text-task');assert.equal('16' in graph,false);assert.equal('first_frame' in graph['6'].inputs,false);assert.equal(graph['6'].inputs.prompt,params.prompt.trim());
+ assert.throws(()=>validateGenerationParams({...params,mode:'audio'}),Error);assert.doesNotThrow(()=>validateGenerationParams({...params,mode:'image'}));assert.doesNotThrow(()=>validateGenerationParams(params));
 });

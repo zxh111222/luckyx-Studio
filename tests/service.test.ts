@@ -104,3 +104,25 @@ test('本机端口HTTP重定向被拒绝，不能绕过仅本机引擎限制',as
  const f=await fixture(t);f.state.redirectStats=true;await f.service.invoke('tasks.refresh');assert.equal((await f.service.invoke('snapshot') as Snapshot).engine.status,'offline');
  await assert.rejects(f.service.invoke('task.submit',base),/先启动引擎/);assert.equal(f.state.calls.filter(c=>c.url==='/prompt').length,0);
 });
+test('自定义尺寸时长的任务与预设重启恢复后保持一致',async t=>{
+ const f=await fixture(t);const custom={...base,width:480,height:864,frames:243};const task=await f.service.invoke('task.submit',custom) as TaskRecord;
+ const sent=f.state.calls.find(c=>c.url==='/prompt')!.body.prompt;assert.equal(sent['6'].inputs.width,480);assert.equal(sent['6'].inputs.height,864);assert.equal(sent['6'].inputs.length,243);assert.equal(sent['14'].inputs.fps,24);
+ await f.service.invoke('preset.save',{name:'竖屏长短片',params:custom});await f.service.dispose();const restored=await createStudioService({dataDir:path.join(f.dir,'data'),defaultInstallationPath:f.installationPath});f.replace(restored);
+ const snapshot=await restored.invoke('snapshot') as Snapshot;const savedTask=snapshot.tasks.find(t=>t.id===task.id)!;
+ for(const params of [savedTask.params,snapshot.presets[0].params]){assert.equal(params.width,480);assert.equal(params.height,864);assert.equal(params.frames,243);assert.equal(params.steps,4);assert.equal(params.seed,custom.seed);}
+ assert.equal(f.state.calls.filter(c=>c.url==='/prompt').length,1);
+});
+test('文生视频无需图片、不上传或保留裸图片数据；图生及历史默认仍需首帧',async t=>{
+ const f=await fixture(t);const text={...base,mode:'text',image:{name:'ignored.png',dataBase64:'invalid-do-not-store'}};
+ const task=await f.service.invoke('task.submit',text) as TaskRecord;assert.equal(task.status,'queued');assert.equal(task.params.mode,'text');assert.equal(task.params.image,undefined);assert.equal(task.inputImage,undefined);
+ const graph=f.state.calls.find(c=>c.url==='/prompt')!.body.prompt;assert.equal('16' in graph,false);assert.equal('first_frame' in graph['6'].inputs,false);assert.equal(f.state.calls.filter(c=>c.url==='/upload/image').length,0);
+ await assert.rejects(f.service.invoke('task.submit',{...base,image:undefined}),/首帧图片/);await assert.rejects(f.service.invoke('task.submit',{...base,mode:'image',image:undefined}),/首帧图片/);await assert.rejects(f.service.invoke('task.submit',{...base,mode:'unknown'}),Error);
+ assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks.length,1);
+});
+test('文生视频失败可无图片重试，任务与预设的生成方式重启后保留',async t=>{
+ const f=await fixture(t);const text={...base,mode:'text',image:undefined};f.state.failPrompt=true;
+ const failed=await f.service.invoke('task.submit',text) as TaskRecord;assert.equal(failed.status,'failed');assert.equal(failed.inputImage,undefined);
+ f.state.failPrompt=false;const retried=await f.service.invoke('task.retry',{id:failed.id}) as TaskRecord;assert.equal(retried.status,'queued');assert.equal(retried.params.mode,'text');assert.equal(retried.inputImage,undefined);
+ await f.service.invoke('preset.save',{name:'文生视频预设',params:text});await f.service.dispose();const restored=await createStudioService({dataDir:path.join(f.dir,'data'),defaultInstallationPath:f.installationPath});f.replace(restored);
+ const snapshot=await restored.invoke('snapshot') as Snapshot;assert.equal(snapshot.presets[0].params.mode,'text');assert.equal(snapshot.presets[0].params.image,undefined);assert.ok(snapshot.tasks.every(t=>t.params.mode==='text'&&t.params.image===undefined));assert.equal(f.state.calls.filter(c=>c.url==='/upload/image').length,0);assert.equal(f.state.calls.filter(c=>c.url==='/prompt').length,2);
+});

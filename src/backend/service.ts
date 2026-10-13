@@ -8,8 +8,9 @@ import initSqlJs from 'sql.js';
 import { createRequire } from 'node:module';
 import WebSocket from 'ws';
 import templateGraph from './workflows/h3-i2v.json';
-import type { Snapshot, StudioService, TaskRecord, Settings, GenerationParams } from '../shared/contracts';
+import type { Snapshot, StudioService, TaskRecord, Settings, GenerationParams, UserWorkflow, UserWorkflowDocument } from '../shared/contracts';
 import { validateEngineUrl, validateGenerationParams, validateImage, buildWorkflow, mapHistoryOutputs, isPromptRunning, safeOutputPath } from '../shared/workflow';
+import { parseWorkflowJson, validateWorkflowName, createEmptyWorkflowJson } from '../shared/workflow-library';
 const MODEL_SPECS = [['diffusion_models', 'minimax_h3_fl2va_pruned_int8_convrot.safetensors'], ['text_encoders', 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'], ['vae', 'minimax_h3_video_vae_int8_convrot.safetensors'], ['vae', 'minimax_h3_audio_vae_fp32.safetensors'], ['loras', 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors']];
 const activeStatuses = ['submitting', 'queued', 'running', 'unknown'];
 export async function createStudioService(options: {
@@ -31,8 +32,9 @@ export async function createStudioService(options: {
     }
     const db = new SQL.Database(bytes);
     db.run('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    db.run('CREATE TABLE IF NOT EXISTS user_workflows (id TEXT PRIMARY KEY, metadata TEXT NOT NULL, json TEXT NOT NULL)');
     const installationPath = options.defaultInstallationPath ?? 'F:/VideoModels/MiniMax-H3';
-    const snapshot: Snapshot = { settings: { installationPath, modelPath: path.join(installationPath, 'ComfyUI/models'), outputPath: path.join(options.dataDir, 'output'), inputPath: path.join(options.dataDir, 'input'), engineUrl: 'http://127.0.0.1:8188', initialized: false }, engine: { status: 'offline', managed: false, queue: 0, message: '尚未连接引擎' }, hardware: { gpuName: '检测中', vramMb: 0, ramGb: Math.round(os.totalmem() / 1024 ** 3), driver: '未知' }, templates: [{ id: 'h3-i2v', name: 'MiniMax H3 · 图生视频', description: '首帧图片生成约 5.17 秒含音频视频', ready: false, issues: ['尚未验证运行节点'], models: MODEL_SPECS.map(x => x[1]), resolutions: [{ label: '864 × 480', width: 864, height: 480 }, { label: '832 × 480', width: 832, height: 480 }], defaultSteps: 4, frames: 124, fps: 24 }], tasks: [], resources: [], logs: [], presets: [] };
+    const snapshot: Snapshot = { settings: { installationPath, modelPath: path.join(installationPath, 'ComfyUI/models'), outputPath: path.join(options.dataDir, 'output'), inputPath: path.join(options.dataDir, 'input'), engineUrl: 'http://127.0.0.1:8188', initialized: false }, engine: { status: 'offline', managed: false, queue: 0, message: '尚未连接引擎' }, hardware: { gpuName: '检测中', vramMb: 0, ramGb: Math.round(os.totalmem() / 1024 ** 3), driver: '未知' }, templates: [{ id: 'h3-i2v', name: 'MiniMax H3 · 图生视频', description: '支持首帧或纯提示词，默认约 5.17 秒含音频视频', ready: false, issues: ['尚未验证运行节点'], models: MODEL_SPECS.map(x => x[1]), resolutions: [{ label: '864 × 480', width: 864, height: 480 }, { label: '832 × 480', width: 832, height: 480 }], defaultSteps: 4, frames: 124, fps: 24 }], tasks: [], resources: [], logs: [], presets: [], userWorkflows: [] };
     const rows = db.exec('SELECT key,value FROM state')[0]?.values ?? [];
     for (const [key, value] of rows) {
         if (['settings', 'tasks', 'presets'].includes(String(key))) {
@@ -41,6 +43,13 @@ export async function createStudioService(options: {
             }
             catch { }
         }
+    }
+    const workflowRows = db.exec('SELECT metadata FROM user_workflows ORDER BY rowid DESC')[0]?.values ?? [];
+    for (const [value] of workflowRows) {
+        try {
+            snapshot.userWorkflows.push(JSON.parse(String(value)) as UserWorkflow);
+        }
+        catch { }
     }
     snapshot.settings.engineUrl = validateEngineUrl(snapshot.settings.engineUrl);
     const listeners = new Set<(s: Snapshot) => void>();
@@ -331,7 +340,7 @@ export async function createStudioService(options: {
     }
     async function submit(value: unknown) {
         const params = validateGenerationParams(value);
-        const image = validateImage(params.image);
+        const image = params.mode === 'text' ? undefined : validateImage(params.image);
         await refresh();
         if (!['ready', 'busy'].includes(snapshot.engine.status))
             throw new Error('请先启动引擎');
@@ -340,22 +349,24 @@ export async function createStudioService(options: {
             throw new Error(snapshot.templates[0].issues.join('；'));
         const id = randomUUID();
         const now = new Date().toISOString();
-        const task: TaskRecord = { id, title: params.prompt.slice(0, 32), status: 'submitting', createdAt: now, updatedAt: now, params: { ...params, image: undefined }, stage: '上传首帧', outputs: [] };
+        const task: TaskRecord = { id, title: params.prompt.slice(0, 32), status: 'submitting', createdAt: now, updatedAt: now, params: { ...params, image: undefined }, stage: params.mode === 'text' ? '提交纯提示词任务' : '上传首帧', outputs: [] };
         snapshot.tasks.unshift(task);
         await persist();
         emit();
         let promptSent = false;
         try {
-            const form = new FormData();
-            form.append('image', new Blob([image.bytes as BlobPart], { type: image.mime }), id + '-' + image.name);
-            form.append('type', 'input');
-            form.append('overwrite', 'false');
-            const uploaded = await api('/upload/image', { method: 'POST', body: form }, 30000);
-            if (typeof uploaded.name !== 'string' || !safeOutputPath(uploaded.name, uploaded.subfolder ?? ''))
-                throw new Error('引擎返回了无效图片路径');
-            task.inputImage = [uploaded.subfolder, uploaded.name].filter(Boolean).join('/');
+            if (image) {
+                const form = new FormData();
+                form.append('image', new Blob([image.bytes as BlobPart], { type: image.mime }), id + '-' + image.name);
+                form.append('type', 'input');
+                form.append('overwrite', 'false');
+                const uploaded = await api('/upload/image', { method: 'POST', body: form }, 30000);
+                if (typeof uploaded.name !== 'string' || !safeOutputPath(uploaded.name, uploaded.subfolder ?? ''))
+                    throw new Error('引擎返回了无效图片路径');
+                task.inputImage = [uploaded.subfolder, uploaded.name].filter(Boolean).join('/');
+            }
             promptSent = true;
-            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(params, task.inputImage, id), extra_data: { luckyx_task_id: id } });
+            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(params, task.inputImage ?? '', id), extra_data: { luckyx_task_id: id } });
             if (typeof result.prompt_id !== 'string')
                 throw new Error('引擎未确认任务编号');
             task.promptId = result.prompt_id;
@@ -395,7 +406,8 @@ export async function createStudioService(options: {
         const task = snapshot.tasks.find(t => t.id === (payload as any)?.id);
         if (!task || !['failed', 'interrupted'].includes(task.status))
             throw new Error('请选择失败或已取消的任务');
-        if (!task.inputImage)
+        const params = validateGenerationParams(task.params);
+        if (params.mode !== 'text' && !task.inputImage)
             throw new Error('请重新上传首帧图片后生成');
         await refresh();
         if (!['ready', 'busy'].includes(snapshot.engine.status))
@@ -403,11 +415,11 @@ export async function createStudioService(options: {
         await validate();
         if (!snapshot.templates[0].ready)
             throw new Error('模板依赖未就绪');
-        const cloned: TaskRecord = { ...structuredClone(task), id: randomUUID(), promptId: undefined, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), outputs: [], error: undefined, status: 'submitting', stage: '重新提交' };
+        const cloned: TaskRecord = { ...structuredClone(task), params: { ...params, image: undefined }, id: randomUUID(), promptId: undefined, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), outputs: [], error: undefined, status: 'submitting', stage: '重新提交' };
         snapshot.tasks.unshift(cloned);
         await persist();
         try {
-            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(task.params, task.inputImage, cloned.id), extra_data: { luckyx_task_id: cloned.id } });
+            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(params, task.inputImage ?? '', cloned.id), extra_data: { luckyx_task_id: cloned.id } });
             if (typeof result.prompt_id !== 'string')
                 throw new Error('引擎未确认任务编号');
             cloned.promptId = result.prompt_id;
@@ -423,12 +435,86 @@ export async function createStudioService(options: {
         emit();
         return cloned;
     }
+    function workflowDocument(payload: unknown): UserWorkflowDocument {
+        const id = (payload as {
+            id?: unknown;
+        } | null)?.id;
+        if (typeof id !== 'string' || !id || id.length > 128)
+            throw new Error('请选择有效的工作流');
+        const row = db.exec('SELECT metadata,json FROM user_workflows WHERE id = ?', [id])[0]?.values[0];
+        if (!row)
+            throw new Error('工作流不存在或已移除');
+        return { metadata: JSON.parse(String(row[0])) as UserWorkflow, json: String(row[1]) };
+    }
+    async function importWorkflow(payload: unknown): Promise<UserWorkflow> {
+        const input = payload as {
+            name?: unknown;
+            json?: unknown;
+        } | null;
+        const name = validateWorkflowName(input?.name);
+        const json = input?.json;
+        if (typeof json !== 'string')
+            throw new Error('请提供工作流 JSON 文本');
+        const parsed = parseWorkflowJson(json);
+        const now = new Date().toISOString();
+        const metadata: UserWorkflow = { id: randomUUID(), name, format: parsed.format, nodeCount: parsed.nodeCount, createdAt: now, updatedAt: now };
+        db.run('INSERT INTO user_workflows(id,metadata,json) VALUES(?,?,?)', [metadata.id, JSON.stringify(metadata), json]);
+        snapshot.userWorkflows.unshift(metadata);
+        await persist();
+        emit();
+        return structuredClone(metadata);
+    }
+    async function updateWorkflow(payload: unknown, renameOnly: boolean): Promise<UserWorkflow> {
+        const document = workflowDocument(payload);
+        const input = payload as {
+            name?: unknown;
+            json?: unknown;
+        };
+        let json = document.json;
+        const metadata = { ...document.metadata, updatedAt: new Date().toISOString() };
+        if (renameOnly)
+            metadata.name = validateWorkflowName(input.name);
+        else {
+            if (typeof input.json !== 'string')
+                throw new Error('请提供工作流 JSON 文本');
+            const parsed = parseWorkflowJson(input.json);
+            json = input.json;
+            metadata.format = parsed.format;
+            metadata.nodeCount = parsed.nodeCount;
+        }
+        db.run('UPDATE user_workflows SET metadata = ?, json = ? WHERE id = ?', [JSON.stringify(metadata), json, metadata.id]);
+        const index = snapshot.userWorkflows.findIndex(workflow => workflow.id === metadata.id);
+        if (index >= 0)
+            snapshot.userWorkflows[index] = metadata;
+        await persist();
+        emit();
+        return structuredClone(metadata);
+    }
+    async function removeWorkflow(payload: unknown): Promise<{
+        id: string;
+    }> {
+        const { metadata } = workflowDocument(payload);
+        db.run('DELETE FROM user_workflows WHERE id = ?', [metadata.id]);
+        snapshot.userWorkflows = snapshot.userWorkflows.filter(workflow => workflow.id !== metadata.id);
+        await persist();
+        emit();
+        return { id: metadata.id };
+    }
     const service: StudioService = {
         async invoke(command, payload) {
             if (disposed)
                 throw new Error('启动器已关闭');
             switch (command) {
                 case 'snapshot': return structuredClone(snapshot);
+                case 'workflow.list': return structuredClone(snapshot.userWorkflows);
+                case 'workflow.get': return workflowDocument(payload);
+                case 'workflow.import': return importWorkflow(payload);
+                case 'workflow.create': return importWorkflow({ name: (payload as {
+                        name?: unknown;
+                    } | null)?.name ?? '未命名工作流', json: createEmptyWorkflowJson() });
+                case 'workflow.rename': return updateWorkflow(payload, true);
+                case 'workflow.update': return updateWorkflow(payload, false);
+                case 'workflow.remove': return removeWorkflow(payload);
                 case 'engine.start': return start();
                 case 'engine.stop': return stop();
                 case 'engine.restart':

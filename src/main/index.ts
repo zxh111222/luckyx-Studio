@@ -5,13 +5,15 @@ import { createWriteStream, promises as fs } from 'node:fs'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createStudioService } from '../backend/service'
-import type { Settings, Snapshot, StudioService } from '../shared/contracts'
+import type { Settings, Snapshot, StudioService, UserWorkflowDocument } from '../shared/contracts'
 import { getWindowBounds } from '../shared/window-bounds'
 import { validateReferenceUrl } from '../shared/reference-url'
+import { createWorkflowEditorManager, sanitizeWorkflowFilename, type WorkflowEditorManager } from './workflow-editor'
 
 const here = dirname(fileURLToPath(import.meta.url))
 let window: BrowserWindow | null = null
 let service: StudioService
+let workflowEditors: WorkflowEditorManager | undefined
 let closing = false
 protocol.registerSchemesAsPrivileged([{ scheme: 'luckyx', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }])
 const single = app.requestSingleInstanceLock()
@@ -19,7 +21,24 @@ if (!single) app.quit()
 
 async function native(command: string, payload: unknown) {
   if (command === 'native.openReference') return shell.openExternal(validateReferenceUrl((payload as { url?: unknown })?.url))
+  if (command === 'native.exportWorkflow') {
+    const id = (payload as { id?: unknown })?.id
+    if (typeof id !== 'string') throw new Error('工作流编号无效')
+    const document = await service.invoke('workflow.get', { id }) as UserWorkflowDocument
+    const destination = await dialog.showSaveDialog(window!, { title: '导出工作流 JSON', defaultPath: sanitizeWorkflowFilename(document.metadata.name), filters: [{ name: 'ComfyUI 工作流', extensions: ['json'] }] })
+    if (destination.canceled || !destination.filePath) return false
+    await fs.writeFile(destination.filePath, document.json, 'utf8')
+    return destination.filePath
+  }
+  if (command === 'native.saveWorkflow') {
+    if (!workflowEditors) throw new Error('节点编辑器尚未就绪')
+    return workflowEditors.save((payload as { id: string })?.id)
+  }
   const snapshot = await service.invoke('snapshot') as Snapshot
+  if (command === 'native.editWorkflow') {
+    if (!workflowEditors) throw new Error('节点编辑器尚未就绪')
+    return workflowEditors.open((payload as { id: string })?.id, snapshot.settings.engineUrl)
+  }
   if (command === 'native.openEngine') return shell.openExternal(snapshot.settings.engineUrl)
   if (command === 'native.chooseDirectory') {
     const field = (payload as { field: keyof Settings })?.field
@@ -75,6 +94,11 @@ app.whenReady().then(async () => {
     frame: false, title: 'luckyx. Studio', icon: join(here, '../renderer/brand/icon-256.png'), backgroundColor: '#101315', show: false,
     webPreferences: { preload: join(here, '../preload/index.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false }
   })
+  workflowEditors = createWorkflowEditorManager({
+    Window: BrowserWindow, service, getParent: () => window,
+    getBounds: () => getWindowBounds(screen.getPrimaryDisplay().workAreaSize),
+    iconPath: join(here, '../renderer/brand/icon-256.png')
+  })
   window.webContents.setWindowOpenHandler(({ url }) => {
     const target = new URL(url)
     if (target.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)) void shell.openExternal(url)
@@ -93,7 +117,7 @@ app.whenReady().then(async () => {
     if (action === 'close') window.close()
   })
   const unsubscribe = service.subscribe(snapshot => { if (window && !window.webContents.isDestroyed()) window.webContents.send('studio:snapshot', snapshot) })
-  window.on('closed', () => { unsubscribe(); window = null })
+  window.on('closed', () => { workflowEditors?.dispose(); unsubscribe(); window = null })
   window.once('ready-to-show', () => window?.show())
   if (process.env.ELECTRON_RENDERER_URL) window.loadURL(process.env.ELECTRON_RENDERER_URL)
   else window.loadFile(join(here, '../renderer/index.html'))
@@ -104,6 +128,7 @@ app.whenReady().then(async () => {
 app.on('second-instance', () => { window?.restore(); window?.focus() })
 app.on('window-all-closed', () => app.quit())
 app.on('before-quit', event => {
+  workflowEditors?.dispose()
   if (!service || closing) return
   event.preventDefault()
   closing = true

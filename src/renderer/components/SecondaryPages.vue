@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { PhCpu, PhFolderOpen, PhMagnifyingGlass, PhPlay, PhCheckCircle, PhWarningCircle, PhArrowClockwise, PhExport, PhFilmStrip, PhX, PhTerminalWindow, PhActivity, PhInfo, PhSlidersHorizontal, PhArrowSquareOut } from '@phosphor-icons/vue'
 import type { Snapshot, OutputFile, TaskRecord, Settings, TaskStatus } from '../../shared/contracts'
 import ModelRecommendations from './ModelRecommendations.vue'
+import WorkflowLibrary from './WorkflowLibrary.vue'
 
 const props = defineProps<{ page: string; snapshot: Snapshot; busy: boolean; mediaUrl: (output: OutputFile) => string }>()
 const emit = defineEmits<{ action: [command: string, payload?: unknown]; create: []; restore: [task: TaskRecord] }>()
@@ -79,6 +80,7 @@ watch(() => props.page, () => { query.value = ''; pathError.value = '' })
   <section v-else-if="page === 'library'" class="secondary-page">
     <header class="page-heading"><p class="eyebrow">模板 · 精选</p><h1>工作流库</h1><p class="muted">少一点配置，多一点创作。</p></header>
     <div class="toolbar"><div class="search-field"><PhMagnifyingGlass :size="21" /><input v-model="query" aria-label="搜索工作流" placeholder="搜索工作流" /><button v-if="query" class="icon-clear" aria-label="清空搜索" @click="query = ''"><PhX :size="17" /></button></div><span class="badge">图生视频</span></div>
+    <WorkflowLibrary :snapshot="snapshot" :query="query" :busy="busy" @refresh="emit('action', 'snapshot')" />
     <p class="muted count">{{ templates.length }} 个精选模板</p>
     <article v-for="item in templates" :key="item.id" class="panel library-card"><div class="template-image"><img src="/forest-preview.webp" alt="雾林晨光，静态模板示例" /><span>静态模板示例</span></div><div class="template-copy"><p class="eyebrow">本地生成 · MiniMax H3</p><h2>{{ item.name }}</h2><span class="readiness" :class="{ good: item.ready && engineReady }"><component :is="item.ready && engineReady ? PhCheckCircle : PhInfo" :size="18" />{{ engineReady ? (item.ready ? '依赖检查通过' : '依赖待处理') : '引擎离线 · 运行条件待检查' }}</span><p class="muted">{{ item.description }}</p><dl class="details"><dt>输入</dt><dd>图片 + 提示词</dd><dt>输出</dt><dd>MP4 视频 + 音轨</dd><dt>默认时长</dt><dd>{{ (item.frames / item.fps).toFixed(2) }} 秒 · {{ item.fps }} fps</dd><dt>采样步数</dt><dd>{{ item.defaultSteps }} 步</dd></dl><p class="muted small">设备：{{ gpu }} · {{ vram }}</p><div class="actions"><button class="btn primary" @click="emit('create')"><PhPlay :size="18" weight="fill" />开始创作</button><button class="btn secondary" :disabled="busy" @click="dependencies">查看依赖</button></div></div></article>
     <div v-if="!templates.length" class="panel empty-state"><PhMagnifyingGlass :size="36" /><h3>没有匹配的工作流</h3><p class="muted">试试其他关键词。</p><button class="btn secondary" @click="query = ''">清空搜索</button></div>
