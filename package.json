@@ -46,9 +46,10 @@
     "afterPack": "scripts/windows-resources.cjs",
     "directories": { "output": "dist" },
     "files": ["out/**/*", "package.json"],
+    "extraResources": [{ "from": "build/icon.ico", "to": "app-icon.ico" }],
     "asarUnpack": ["node_modules/sql.js/dist/*.wasm"],
     "win": { "target": "nsis", "executableName": "luckyx. Studio", "icon": "build/icon.ico", "signAndEditExecutable": false },
-    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "installerIcon": "build/icon.ico", "uninstallerIcon": "build/icon.ico", "artifactName": "luckyx-Studio-Setup-${version}-${arch}.${ext}", "shortcutName": "luckyx. Studio" }
+    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "installerIcon": "build/icon.ico", "uninstallerIcon": "build/icon.ico", "include": "build/installer.nsh", "artifactName": "luckyx-Studio-Setup-${version}-${arch}.${ext}", "shortcutName": "luckyx. Studio" }
   }
 }
 

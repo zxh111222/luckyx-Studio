@@ -177,7 +177,9 @@ export function createWorkflowEditorManager(options: {
         })
         entry.ready = (async () => {
           try {
-            await withDeadline(editor.loadURL(origin + '/'), 20000, '本地节点编辑器无法打开，请先确认 ComfyUI 引擎已启动。')
+            try {
+              await withDeadline(editor.loadURL(origin + '/'), 20000, '本地节点编辑器无法打开，请先确认 ComfyUI 引擎已启动。')
+            } catch { throw new Error('本地节点编辑器无法打开，请先确认 ComfyUI 引擎已启动。') }
             if (editor.isDestroyed() || !isAllowedEditorNavigation(contents.getURL(), origin)) throw new Error('节点编辑器已关闭或离开本地引擎')
             const result = await withDeadline(contents.executeJavaScript(source), 18000, COMPATIBILITY_ERROR)
             if (!result || result.loaded !== true) throw new Error(COMPATIBILITY_ERROR)

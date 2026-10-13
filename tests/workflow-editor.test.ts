@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { buildEditorLoadScript, buildEditorSaveScript, isAllowedEditorNavigation, sanitizeWorkflowFilename } from '../src/main/workflow-editor';
+import { EventEmitter } from 'node:events';
+import { createWorkflowEditorManager, buildEditorLoadScript, buildEditorSaveScript, isAllowedEditorNavigation, sanitizeWorkflowFilename } from '../src/main/workflow-editor';
 
 function sandbox(app?:any){return {window:app?{comfyAPI:{app:{app}}}:{},atob,TextDecoder,TextEncoder,Uint8Array,setTimeout,clearTimeout,Date,JSON,Error,console};}
 const ui={version:0.4,nodes:[{id:1,type:'Text',widgets_values:['中文提示词']}],links:[]};
@@ -48,4 +49,51 @@ test('加载或serialize卡住时仍按等待预算退出，不无限阻塞',asy
  const app={graph:{serialize:()=>new Promise(()=>{})},loadGraphData:()=>new Promise(()=>{})};
  await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(ui),'ui',20),sandbox(app))),/编辑器未就绪/);
  await assert.rejects(Promise.resolve(runInNewContext(buildEditorSaveScript(20),sandbox(app))),/编辑器未就绪/);
+});
+test('UI或API加载器明确返回false时拒绝成功响应，旧版undefined返回仍兼容',async()=>{
+ for(const [format,graph] of [['ui',ui],['api',api]] as const){
+  const rejected={graph:{},loadGraphData:async()=>false,loadApiJson:async()=>false};await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(rejected))),Error);
+  const compatible={graph:{},loadGraphData:async()=>undefined,loadApiJson:async()=>undefined};assert.equal((await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(compatible))).loaded,true);
+ }
+});
+
+
+function editorManagerFixture(loadError?:Error){
+ const instances:any[]=[];const records=new Map<string,any>(['first','second'].map(id=>[id,{metadata:{id,name:id,format:'ui'},json:JSON.stringify(ui)}]));const calls:{command:string;payload:any}[]=[];
+ class FakeWindow extends EventEmitter {
+  destroyed=false;loadedGraph:any;loadCount=0;focusCount=0;currentUrl='';options:any;webContents:any;
+  constructor(options:any){super();this.options=options;instances.push(this);const events=new EventEmitter();const sessionEvents=new EventEmitter();const session:any={on:sessionEvents.on.bind(sessionEvents),clearStorageData:async()=>{},setPermissionRequestHandler:(handler:any)=>{session.permissionRequest=handler;},setPermissionCheckHandler:(handler:any)=>{session.permissionCheck=handler;},webRequest:{onBeforeRequest:(handler:any)=>{session.beforeRequest=handler;}}};
+   const app={graph:{serialize:()=>this.loadedGraph},loadGraphData:async(graph:any)=>{this.loadedGraph=graph;this.loadCount++;},loadApiJson:async(graph:any)=>{this.loadedGraph=graph;this.loadCount++;}};
+   this.webContents={session,on:events.on.bind(events),emit:events.emit.bind(events),setWindowOpenHandler:(handler:any)=>{this.webContents.popup=handler;},getURL:()=>this.currentUrl,isDestroyed:()=>this.destroyed,executeJavaScript:async(script:string)=>runInNewContext(script,sandbox(app))};
+  }
+  async loadURL(url:string){if(loadError)throw loadError;this.currentUrl=url;}isDestroyed(){return this.destroyed;}isMinimized(){return false;}restore(){}show(){}focus(){this.focusCount++;}destroy(){this.destroyed=true;this.emit('closed');}
+ }
+ const manager=createWorkflowEditorManager({Window:FakeWindow as any,service:{invoke:async(command,payload)=>{calls.push({command,payload});const id=(payload as any)?.id;const document=records.get(id);if(!document)throw new Error('未找到工作流');if(command==='workflow.get')return structuredClone(document);if(command==='workflow.update'){document.json=(payload as any).json;return document.metadata;}throw new Error('禁止执行其它操作');}},getParent:()=>({isDestroyed:()=>false} as any),getBounds:()=>({width:1280,height:800,minWidth:1200,minHeight:720}),iconPath:'test-icon.png'});
+ return {manager,instances,records,calls};
+}
+test('编辑窗口同ID复用保留未保存图，不同ID使用独立会话，保存只更新原ID',async()=>{
+ const f=editorManagerFixture();try{
+  await Promise.all([f.manager.open('first','http://127.0.0.1:8188'),f.manager.open('first','http://127.0.0.1:8188')]);assert.equal(f.instances.length,1);const first=f.instances[0];assert.equal(first.loadCount,1);
+  first.loadedGraph.nodes[0].widgets_values=['未保存修改'];const reused=await f.manager.open('first','http://127.0.0.1:8188');assert.equal(reused.reused,true);assert.equal(first.loadCount,1);assert.equal(first.loadedGraph.nodes[0].widgets_values[0],'未保存修改');
+  await f.manager.open('second','http://127.0.0.1:8188');const second=f.instances[1];assert.equal(f.instances.length,2);assert.notEqual(first.options.webPreferences.partition,second.options.webPreferences.partition);assert.ok(!first.options.webPreferences.partition.startsWith('persist:'));
+  await f.manager.save('first');const writes=f.calls.filter(call=>call.command==='workflow.update');assert.equal(writes.length,1);assert.equal(writes[0].payload.id,'first');assert.equal(JSON.parse(writes[0].payload.json).nodes[0].widgets_values[0],'未保存修改');assert.equal(JSON.parse(f.records.get('second').json).nodes[0].widgets_values[0],'中文提示词');assert.ok(f.calls.every(call=>['workflow.get','workflow.update'].includes(call.command)));
+  f.manager.dispose();assert.ok(f.instances.every(window=>window.destroyed));await assert.rejects(f.manager.open('first','http://127.0.0.1:8188'),/启动器已关闭/);await assert.rejects(f.manager.save('first'),/启动器已关闭/);
+ }finally{f.manager.dispose();}
+});
+test('编辑子窗口隔离Node、拒绝权限弹窗和外域网络，不允许离开本机引擎',async()=>{
+ const f=editorManagerFixture();try{
+  await f.manager.open('first','http://127.0.0.1:8188');const editor=f.instances[0];const preferences=editor.options.webPreferences;
+  assert.equal(preferences.nodeIntegration,false);assert.equal(preferences.nodeIntegrationInWorker,false);assert.equal(preferences.nodeIntegrationInSubFrames,false);assert.equal(preferences.contextIsolation,true);assert.equal(preferences.sandbox,true);assert.equal(preferences.webSecurity,true);assert.equal(preferences.webviewTag,false);assert.equal(preferences.preload,undefined);
+  const contents=editor.webContents;assert.deepEqual(contents.popup({url:'https://example.com'}),{action:'deny'});let permission:any;contents.session.permissionRequest({},'camera',(allowed:any)=>{permission=allowed;});assert.equal(permission,false);assert.equal(contents.session.permissionCheck({},'camera'),false);
+  for(const [url,type,cancel] of [['https://example.com/','xhr',true],['http://127.0.0.1:8188/api','xhr',false],['ws://evil.test/','webSocket',true],['ws://127.0.0.1:8188/ws','webSocket',false],['data:text/html,test','mainFrame',true],['data:image/png;base64,AA==','image',false]] as const){let result:any;contents.session.beforeRequest({url,resourceType:type},(decision:any)=>{result=decision;});assert.equal(result.cancel,cancel,url);}
+  let prevented=false;contents.emit('will-navigate',{preventDefault:()=>{prevented=true;}},'https://example.com');assert.equal(prevented,true);
+  editor.currentUrl='https://example.com/';await assert.rejects(f.manager.save('first'),/离开本地引擎/);assert.equal(f.calls.filter(call=>call.command==='workflow.update').length,0);
+ }finally{f.manager.dispose();}
+});
+
+test('本机编辑器打开失败时给中文原因并销毁失败窗口，不留下可保存记录',async()=>{
+ const f=editorManagerFixture(new Error('ERR_CONNECTION_REFUSED'));try{
+  await assert.rejects(f.manager.open('first','http://127.0.0.1:8188'),/本地节点编辑器无法打开/);assert.equal(f.instances.length,1);assert.equal(f.instances[0].destroyed,true);
+  await assert.rejects(f.manager.save('first'),/请先打开/);assert.equal(f.calls.filter(call=>call.command==='workflow.update').length,0);
+ }finally{f.manager.dispose();}
 });

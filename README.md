@@ -4,8 +4,8 @@
 
 ## 运行
 
-- 安装版：打开 `dist/installer/luckyx-Studio-Setup-0.1.1-x64.exe`，按提示选择目录；先退出正在运行的旧版。
-- 免安装版：打开 `dist/installer/win-unpacked/luckyx. Studio.exe`，请保留同目录其他文件。
+- 安装版：打开 `dist/v0.1.1/luckyx-Studio-Setup-0.1.1-x64.exe`，按提示选择目录；先退出正在运行的旧版。
+- 免安装版：打开 `dist/v0.1.1/win-unpacked/luckyx. Studio.exe`，请保留同目录其他文件。
 - 开发：Node.js 22.12 以上，执行 `npm install`、`npm run dev`。
 - 浏览器预览：执行 `npm run preview`，打开 http://127.0.0.1:4173/ 。目录选择使用桌面版。
 - 检查：`npm run check`、`npm test`、`npm run build`。
@@ -24,3 +24,7 @@
 
 `docs/`、设计截图、本地说明及 `dist/` 安装产物均被 Git 忽略，仅保留在本地。仓库保留程序源码、必要资源、测试和本运行说明。
 
+
+工作流库支持普通节点 JSON 和 API JSON。桌面版可直接打开原生节点编辑器，并将编辑结果保存回库；浏览器预览需导出 JSON 后拖入 ComfyUI，编辑后更新 JSON。生成方式可以选择图生或文生视频；自定义尺寸和时长、文生视频尚未完成实机出片验证。
+
+如安装后仍显示旧图标，请先退出旧免安装版，再安装新版。安装器为桌面及开始菜单快捷方式设置独立图标文件，避免旧 EXE 图标缓存。

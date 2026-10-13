@@ -94,5 +94,11 @@ await section('afterPack实际嵌入256px图标和产品名',async()=>{
  check(productName===pkg.build.productName,`EXE ProductName不匹配：${productName??'缺失'}`);
 });
 
+await section('快捷方式独立ICO资源与品牌源一致',async()=>{
+ const expected=await fs.readFile(path.join(root,'build/icon.ico'));
+ const installed=await fs.readFile(path.join(unpacked,'resources/app-icon.ico'));
+ check(installed.equals(expected),'resources/app-icon.ico与品牌ICO不一致或过期');
+ check(installed.readUInt16LE(0)===0&&installed.readUInt16LE(2)===1&&installed.readUInt16LE(4)===7,'独立图标不是完整的七尺寸ICO');
+});
 console.log('本检查未执行安装、卸载或生成任务；不能代替干净电脑安装和实际启动验收。');
 if(errors.length){for(const error of errors)console.error(`FAIL ${error}`);process.exitCode=1;}else console.log(`PASS ${unpackedOnly?'解包运行目录':'安装交付'}结构验证通过。`);
