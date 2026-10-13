@@ -13,20 +13,20 @@ const selected = computed(() => ranked.value.find(model => model.id === selected
 const hardwareLabel = computed(() => `${props.snapshot.hardware.gpuName || '显卡待识别'} · ${props.snapshot.hardware.vramMb > 0 ? (props.snapshot.hardware.vramMb / 1024).toFixed(1) + ' GB 显存' : '显存待检测'} · ${props.snapshot.hardware.ramGb > 0 ? props.snapshot.hardware.ramGb + ' GB 内存' : '内存待检测'}`)
 const h3Generated = computed(() => ['ready', 'busy'].includes(props.snapshot.engine.status) && props.snapshot.templates.some(template => template.id === 'h3-i2v' && template.ready) && props.snapshot.tasks.some(task => task.status === 'completed' && task.params.templateId === 'h3-i2v' && task.outputs.length > 0))
 const images: Record<string, string> = { 'wan22-ti2v-5b': '/coast-inspiration.webp', 'wan21-t2v-13b': '/camera-studio.webp', 'ltx-video-2b-095': '/forest-preview.webp', 'minimax-h3-existing': '/forest-preview.webp' }
-const roles: Record<string, string> = { 'wan22-ti2v-5b': '首推探索', 'wan21-t2v-13b': '轻量备选', 'ltx-video-2b-095': '可选探索', 'minimax-h3-existing': '复用现有' }
+const roles: Record<string, string> = { 'wan22-ti2v-5b': '首推探索', 'wan21-t2v-13b': '轻量备选', 'ltx-video-2b-095': '可选探索', 'minimax-h3-existing': '音画同步' }
 const screenshotFailed = ref<Record<string, boolean>>({})
 function openReference(url: string) { emit('action', 'native.openReference', { url }) }
-function modelState(id: string) { return id === 'minimax-h3-existing' ? (h3Generated.value ? '本机已生成 · 当前依赖就绪' : '已接入表单 · 运行条件待确认') : '尚未接入启动器 · 先在原生界面验证' }
+function modelState(id: string) { return id === 'minimax-h3-existing' ? (h3Generated.value ? '工作台可用 · 此设备已有作品' : '支持创作工作台 · 请先检查环境') : '使用方式：原生 ComfyUI' }
 </script>
 
 <template>
   <section class="model-rec" aria-label="模型推荐与官方安装教程">
-    <div class="hardware-summary"><PhCpu :size="24" /><div><strong>{{ hardwareLabel }}</strong><p>依据当前硬件保守筛选。推荐等级不是运行保证，首次使用请先生成短片。</p></div></div>
+    <div class="hardware-summary"><PhCpu :size="24" /><div><strong>{{ hardwareLabel }}</strong><p>按显存与内存匹配模型，建议从低分辨率短片开始。</p></div></div>
     <div class="recommendation-layout">
       <div class="model-grid" aria-label="模型选择">
         <article v-for="model in ranked" :key="model.id" class="model-card" :class="{ selected: selectedId === model.id }">
           <button class="inspiration" :aria-label="`查看 ${model.name} 的官方教程，封面为创作配图`" @click="openReference(model.tutorialUrl)"><img :src="images[model.id]" alt="创作灵感配图，不代表该模型的生成结果" loading="lazy" /><span>创作配图</span><span class="role-tag">{{ roles[model.id] }}</span></button>
-          <div class="card-content"><h3>{{ model.name }}</h3><p class="purpose">{{ model.purpose }}</p><span class="level" :class="model.level"><component :is="model.level === 'recommended' ? PhCheckCircle : PhInfo" :size="16" />{{ model.levelLabel }}</span><p class="source-note">{{ model.sourceNote }}</p><p class="model-state" :class="{ verified: model.id === 'minimax-h3-existing' && h3Generated }">{{ modelState(model.id) }}</p><div class="card-actions"><button class="btn secondary" :aria-pressed="selectedId === model.id" @click="selectedId = model.id">{{ selectedId === model.id ? '正在查看教程' : '查看安装教程' }}<PhArrowRight :size="16" /></button><button class="official-link" :aria-label="`打开 ${model.name} 官方教程`" @click="openReference(model.tutorialUrl)"><PhArrowSquareOut :size="17" /></button></div></div>
+          <div class="card-content"><h3>{{ model.name }}</h3><p class="purpose">{{ model.purpose }}</p><span class="level" :class="model.level"><component :is="model.level === 'recommended' ? PhCheckCircle : PhInfo" :size="16" />{{ model.levelLabel }}</span><p class="source-note">{{ model.description }}</p><p class="model-state" :class="{ verified: model.id === 'minimax-h3-existing' && h3Generated }">{{ modelState(model.id) }}</p><div class="card-actions"><button class="btn secondary" :aria-pressed="selectedId === model.id" @click="selectedId = model.id">{{ selectedId === model.id ? '正在查看教程' : '查看安装教程' }}<PhArrowRight :size="16" /></button><button class="official-link" :aria-label="`打开 ${model.name} 官方教程`" @click="openReference(model.tutorialUrl)"><PhArrowSquareOut :size="17" /></button></div></div>
         </article>
       </div>
       <aside class="tutorial-panel" aria-label="所选模型安装详情">
@@ -36,16 +36,16 @@ function modelState(id: string) { return id === 'minimax-h3-existing' ? (h3Gener
         <h3 class="detail-heading">安装步骤</h3><ol class="install-steps"><li v-for="(step, index) in selected.steps" :key="step"><span>{{ index + 1 }}</span><p>{{ step }}</p></li></ol>
         <div class="initial-settings"><strong>建议首次试跑</strong><p>{{ selected.initial.width }} × {{ selected.initial.height }} · {{ selected.initial.frames }} 帧</p><p>{{ selected.initial.note }}</p></div>
         <h3 class="detail-heading">需要的模型文件 <small>{{ selected.downloads.length }} 个</small></h3><p class="files-help">点击文件名打开官方文件页；文件放入 ComfyUI/models 下的对应子目录。</p><ul class="file-list"><li v-for="file in selected.downloads" :key="file.name"><button @click="openReference(file.url)"><PhDownloadSimple :size="16" /><span>{{ file.name }}</span><PhArrowSquareOut :size="14" /></button><code>models/{{ file.folder }}/</code></li></ul>
-        <details class="conditions"><summary>适用条件与注意事项</summary><ul><li v-for="condition in selected.conditions" :key="condition">{{ condition }}</li></ul></details>
+        <details class="conditions"><summary>配置要求与推荐依据</summary><p class="evidence-note">{{ selected.sourceNote }}</p><ul><li v-for="condition in selected.conditions" :key="condition">{{ condition }}</li></ul></details>
         <button v-if="selected.id === 'minimax-h3-existing'" class="btn primary create-button" @click="emit('create')"><PhPlay :size="17" weight="fill" />打开 H3 创作工作台</button>
-        <p v-else class="manual-note"><PhInfo :size="17" />本页提供教程与官方文件链接。其他模型尚未接入一键运行，需要先在原生 ComfyUI 中验证。</p>
+        <p v-else class="manual-note"><PhInfo :size="17" />请按教程在原生 ComfyUI 中安装和运行此模型。启动器创作工作台目前支持 H3。</p>
       </aside>
     </div>
   </section>
 </template>
 
 <style scoped>
-.card-actions .btn, .reference-actions .btn, .install-steps p, .file-list button, .purpose { font-size: 14px !important; }
+.card-actions .btn, .reference-actions .btn, .install-steps p, .file-list button, .purpose, .source-note { font-size: 14px !important; }
 .model-rec { font-size: 14px; line-height: 1.6; min-width: 0; }
 .model-rec h2,.model-rec h3,.model-rec p { margin: 0; }
 .hardware-summary { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 20px; }
@@ -60,4 +60,6 @@ button:focus-visible,summary:focus-visible { outline: 2px solid var(--accent); o
 @media(max-width:1050px) { .recommendation-layout { grid-template-columns: 1fr; }.model-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.source-note { min-height: 42px; }.tutorial-screenshot { max-width: 640px; }.hardware-summary { align-items: flex-start; } }
 @media(max-width:650px) { .model-grid { grid-template-columns: 1fr; }.hardware-summary { padding: 14px; }.source-note,.purpose { min-height: 0; } }
 </style>
+
+
 

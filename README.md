@@ -1,10 +1,10 @@
 # luckyx. Studio
 
-本地视频工作流启动器。当前版本接入已有 MiniMax H3 环境，支持首帧生成、结果预览、任务记录、参数预设及资源诊断。
+本地视频工作流启动器。当前版本接入已有 MiniMax H3 环境，支持首帧生成、结果预览、任务记录、参数预设、资源诊断及设备模型推荐。
 
 ## 运行
 
-- 桌面版：打开 `dist/win-unpacked/luckyx. Studio.exe`，请保留同目录其他文件。
+- 桌面版：打开 `dist/model-guides/win-unpacked/luckyx. Studio.exe`，请保留同目录其他文件。
 - 开发：Node.js 22.12 以上，执行 `npm install`、`npm run dev`。
 - 浏览器预览：执行 `npm run preview`，打开 http://127.0.0.1:4173/ 。目录选择使用桌面版。
 - 检查：`npm run check`、`npm test`、`npm run build`。
@@ -18,3 +18,6 @@
 这是一版可运行的本地原型。已有环境无需再次下载模型；新电脑自动安装、模型下载续传、更新回滚仍属于后续 MVP 工作。任务和路径保存在本地 SQLite。浏览器预览与桌面开发分别保存数据，避免互相覆盖。
 
 产品、技术与定稿图见 `docs/`，窗口验收截图见 `docs/开发验收/`。
+
+模型选择与截图步骤见 [模型指南](docs/08-视频模型推荐与安装指南.md) 与 [截图教程](docs/截图教程/README.md)。推荐模型的手动安装不等于已经接入启动器创作表单。
+
