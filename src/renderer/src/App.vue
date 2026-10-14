@@ -152,6 +152,7 @@ async function run(command: string, payload?: unknown) {
     else if (command === 'template.validate' || command === 'diagnostics.run') {
       announce(state.value?.templates[0]?.ready ? '资源与节点检查通过，可以开始创作' : state.value?.templates[0]?.issues[0] || '请查看诊断结果', !state.value?.templates[0]?.ready)
     } else if (command === 'task.cancel') announce('已请求取消，任务状态以引擎返回为准')
+    else if (command === 'task.remove') announce('历史记录已删除，视频和素材文件已保留')
     else if (command === 'preset.save') { presetOpen.value = false; announce('参数预设已保存') }
     else if (command === 'settings.save') announce('本地配置已保存')
     else if (command === 'native.export' && result !== false) announce(desktop ? '视频已导出' : '视频下载已发起')
@@ -285,7 +286,7 @@ onUnmounted(() => { closing = true; unsubscribe(); window.clearTimeout(toastTime
       <aside class="sidebar">
         <a class="brand" href="#home" aria-label="luckyx. Studio 首页" @click.prevent="navigate('home')"><img class="brand-icon" src="/brand/luckyx-symbol.svg" width="32" height="32" alt="" /><span class="brand-wordmark"><strong>luckyx.</strong><span>Studio</span></span></a>
         <nav aria-label="主要导航"><button v-for="item in nav" :key="item.id" :class="['nav-item', { active: page === item.id }]" :aria-current="page === item.id ? 'page' : undefined" :aria-label="item.label" :title="item.label" @click="navigate(item.id)"><component :is="item.icon" :size="21" weight="regular" /><span>{{ item.label }}</span></button></nav>
-        <div class="sidebar-bottom"><button class="setup-link" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><p>本地创作<br />素材留在你的电脑</p><span class="version">v0.1.4 · 本地创作</span></div>
+        <div class="sidebar-bottom"><button class="setup-link" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><p>本地创作<br />素材留在你的电脑</p><span class="version">v0.1.5 · 本地创作</span></div>
       </aside>
       <main ref="mainContent" class="main-content" :class="{ 'workbench-main': page === 'workbench' && workbenchKind === 'generate' }">
         <div v-if="!state" class="boot-state"><PhSpinnerGap v-if="!bootError" :size="32" class="spinning" /><PhWarningCircle v-else :size="32" /><h1>{{ bootError ? '连接尚未完成' : '准备你的创作工作台' }}</h1><p class="muted">{{ bootError || '正在读取本地环境和任务记录…' }}</p><button v-if="bootError" class="btn primary" @click="refresh().then(() => bootError = '').catch(() => {})">重试连接</button></div>

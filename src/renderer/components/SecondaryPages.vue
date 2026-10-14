@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import { PhCpu, PhFolderOpen, PhMagnifyingGlass, PhPlay, PhCheckCircle, PhWarningCircle, PhArrowClockwise, PhExport, PhFilmStrip, PhX, PhTerminalWindow, PhActivity, PhInfo, PhSlidersHorizontal, PhArrowSquareOut } from '@phosphor-icons/vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { PhCpu, PhFolderOpen, PhMagnifyingGlass, PhPlay, PhCheckCircle, PhWarningCircle, PhArrowClockwise, PhExport, PhFilmStrip, PhX, PhTerminalWindow, PhActivity, PhInfo, PhSlidersHorizontal, PhArrowSquareOut, PhTrash } from '@phosphor-icons/vue'
 import type { Snapshot, OutputFile, TaskRecord, Settings, TaskStatus } from '../../shared/contracts'
+import { canRemoveTask } from '../../shared/task-policy'
 import ModelRecommendations from './ModelRecommendations.vue'
 import WorkflowLibrary from './WorkflowLibrary.vue'
 import BootstrapSetup from './BootstrapSetup.vue'
@@ -39,6 +40,18 @@ function dependencies() { showDependencies.value = true; emit('action', 'templat
 const taskTab = ref('tasks')
 const statusFilter = ref('all')
 const selectedId = ref('')
+const removingId = ref('')
+const deleteButton = ref<HTMLButtonElement | null>(null)
+const keepButton = ref<HTMLButtonElement | null>(null)
+async function requestRemove(task: TaskRecord) {
+  if (props.busy || !removable(task)) return
+  removingId.value = task.id
+  await nextTick(); keepButton.value?.focus({ preventScroll: true })
+}
+async function keepHistory() {
+  removingId.value = ''
+  await nextTick(); deleteButton.value?.focus({ preventScroll: true })
+}
 const statusNames: Record<TaskStatus, string> = { submitting: '提交中', queued: '排队中', running: '生成中', completed: '已完成', failed: '失败', interrupted: '已中断', unknown: '状态待确认' }
 const pageIndex = ref(1)
 const pageSize = 20
@@ -51,6 +64,13 @@ const selectedTask = computed(() => visibleTasks.value.find(t => t.id === select
 const currentTask = computed(() => props.snapshot.tasks.find(t => ['submitting', 'running', 'queued'].includes(t.status)))
 const cancellable = (t: TaskRecord) => ['submitting', 'queued', 'running'].includes(t.status)
 const retryable = (t: TaskRecord) => ['failed', 'interrupted'].includes(t.status)
+const removable = (t: TaskRecord) => canRemoveTask(t.status)
+watch(() => selectedTask.value?.id, () => { removingId.value = '' })
+function removeHistory(task: TaskRecord) {
+  if (props.busy || !removable(task) || removingId.value !== task.id) return
+  removingId.value = ''
+  emit('action', 'task.remove', { id: task.id })
+}
 const percent = (t: TaskRecord) => t.progress && t.progress.max > 0 ? Math.min(100, Math.max(0, Math.round(t.progress.value / t.progress.max * 100))) : 0
 const date = (value: string) => new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 const resourceTab = ref('model')
@@ -63,7 +83,7 @@ const settingsTab = ref('general')
 const logQuery = ref('')
 const logLevel = ref('all')
 const logs = computed(() => props.snapshot.logs.filter(l => (logLevel.value === 'all' || l.level === logLevel.value) && l.message.toLowerCase().includes(logQuery.value.toLowerCase())).slice().reverse())
-watch(() => props.page, () => { query.value = ''; pathError.value = '' })
+watch(() => props.page, () => { query.value = ''; pathError.value = ''; removingId.value = '' })
 </script>
 
 <template>
@@ -101,7 +121,7 @@ watch(() => props.page, () => { query.value = ''; pathError.value = '' })
       <div v-if="!visibleTasks.length" class="empty-state"><PhFilmStrip :size="40" /><h3>{{ snapshot.tasks.length ? '没有符合条件的记录' : '第一段视频，从这里开始' }}</h3><p class="muted">{{ snapshot.tasks.length ? '调整搜索词或筛选条件。' : '完成创作后，任务和作品会保存在这里。' }}</p><button class="btn primary" @click="emit('create')">开始创作</button></div>
       <article v-for="task in visibleTasks" :key="task.id" class="task-row" :class="{ selected: selectedTask?.id === task.id }"><button class="task-select" @click="selectedId = task.id"><PhFilmStrip :size="24" /><span><strong>{{ task.title }}</strong><small class="muted">{{ date(task.createdAt) }} · {{ task.params.width }}×{{ task.params.height }}</small></span></button><span class="task-status" :class="{ good: task.status === 'completed', warning: retryable(task) }">{{ statusNames[task.status] }}</span><button v-if="cancellable(task)" class="btn secondary small-button" :disabled="busy" @click="emit('action', 'task.cancel', { id: task.id })">取消</button><button v-else class="btn secondary small-button" @click="selectedId = task.id">查看</button></article>
       <nav v-if="allVisibleTasks.length > pageSize" class="pagination" aria-label="任务记录分页"><span class="muted small">共 {{ allVisibleTasks.length }} 条 · 每页 {{ pageSize }} 条</span><button class="btn secondary" :disabled="pageIndex <= 1" @click="pageIndex--">上一页</button><span class="small">{{ pageIndex }} / {{ pageCount }}</span><button class="btn secondary" :disabled="pageIndex >= pageCount" @click="pageIndex++">下一页</button></nav>
-    </div><aside class="preview-column"><h3>作品预览</h3><template v-if="selectedTask"><video v-if="selectedTask.status === 'completed' && selectedTask.outputs.length" :key="selectedTask.id" :src="mediaUrl(selectedTask.outputs[0]!)" controls preload="metadata" aria-label="生成作品预览" /><div v-else class="preview-empty"><PhFilmStrip :size="44" /><p>{{ selectedTask.status === 'completed' ? '该记录暂无可预览的输出文件' : '作品完成后将在这里显示' }}</p></div><h3>{{ selectedTask.title }}</h3><p class="muted">{{ statusNames[selectedTask.status] }} · {{ date(selectedTask.createdAt) }}</p><p class="muted">{{ selectedTask.params.width }}×{{ selectedTask.params.height }} · {{ (selectedTask.params.frames / 24).toFixed(2) }} 秒</p><p v-if="selectedTask.error" class="error task-error" role="alert">{{ selectedTask.error }}</p><div class="actions wrap"><button v-if="selectedTask.status === 'completed' && selectedTask.outputs.length" class="btn primary" :disabled="busy" @click="emit('action', 'native.export', { taskId: selectedTask.id, index: 0 })"><PhExport :size="18" />导出 MP4</button><button class="btn secondary" @click="emit('restore', selectedTask)"><PhSlidersHorizontal :size="18" />回填参数</button><button v-if="retryable(selectedTask)" class="btn secondary" :disabled="busy" @click="emit('action', 'task.retry', { id: selectedTask.id })"><PhArrowClockwise :size="18" />重新生成</button></div><p v-if="retryable(selectedTask)" class="muted small">重新生成会创建新的任务并再次运行；不会续接失败节点。</p><details class="params-details"><summary>查看生成参数</summary><p>{{ selectedTask.params.prompt }}</p><p class="muted small">种子 {{ selectedTask.params.seed }} · {{ selectedTask.params.steps }} 步 · {{ selectedTask.params.frames }} 帧</p></details></template><div v-else class="preview-empty"><PhFilmStrip :size="44" /><p>选择一条记录，查看作品与参数</p></div><p class="page-note muted small">保留种子与生成参数，方便继续创作。</p></aside></div>
+    </div><aside class="preview-column"><h3>作品预览</h3><template v-if="selectedTask"><video v-if="selectedTask.status === 'completed' && selectedTask.outputs.length" :key="selectedTask.id" :src="mediaUrl(selectedTask.outputs[0]!)" controls preload="metadata" aria-label="生成作品预览" /><div v-else class="preview-empty"><PhFilmStrip :size="44" /><p>{{ selectedTask.status === 'completed' ? '该记录暂无可预览的输出文件' : '作品完成后将在这里显示' }}</p></div><h3>{{ selectedTask.title }}</h3><p class="muted">{{ statusNames[selectedTask.status] }} · {{ date(selectedTask.createdAt) }}</p><p class="muted">{{ selectedTask.params.width }}×{{ selectedTask.params.height }} · {{ (selectedTask.params.frames / 24).toFixed(2) }} 秒</p><p v-if="selectedTask.error" class="error task-error" role="alert">{{ selectedTask.error }}</p><div class="actions wrap"><button v-if="selectedTask.status === 'completed' && selectedTask.outputs.length" class="btn primary" :disabled="busy" @click="emit('action', 'native.export', { taskId: selectedTask.id, index: 0 })"><PhExport :size="18" />导出 MP4</button><button class="btn secondary" @click="emit('restore', selectedTask)"><PhSlidersHorizontal :size="18" />回填参数</button><button v-if="retryable(selectedTask)" class="btn secondary" :disabled="busy" @click="emit('action', 'task.retry', { id: selectedTask.id })"><PhArrowClockwise :size="18" />重新生成</button></div><div v-if="removable(selectedTask)" class="history-delete"><template v-if="removingId === selectedTask.id"><p role="status">删除这条历史记录？此操作无法撤销，视频和素材文件会保留。</p><div class="actions wrap"><button ref="keepButton" class="btn secondary" :disabled="busy" @click="keepHistory">保留记录</button><button class="btn secondary delete-confirm" :disabled="busy" @click="removeHistory(selectedTask)"><PhTrash :size="18" />确认删除记录</button></div></template><button v-else ref="deleteButton" class="text-action" :disabled="busy" @click="requestRemove(selectedTask)"><PhTrash :size="18" />删除历史记录</button></div><p v-else class="muted small">任务结束后可删除记录；状态待确认的任务需先确认运行状态。</p><p v-if="retryable(selectedTask)" class="muted small">重新生成会创建新的任务并再次运行；不会续接失败节点。</p><details class="params-details"><summary>查看生成参数</summary><p>{{ selectedTask.params.prompt }}</p><p class="muted small">种子 {{ selectedTask.params.seed }} · {{ selectedTask.params.steps }} 步 · {{ selectedTask.params.frames }} 帧</p></details></template><div v-else class="preview-empty"><PhFilmStrip :size="44" /><p>选择一条记录，查看作品与参数</p></div><p class="page-note muted small">保留种子与生成参数，方便继续创作。</p></aside></div>
   </section>
 
   <section v-else-if="page === 'resources'" class="secondary-page">
@@ -134,6 +154,7 @@ h1,h2,h3,p { margin-top: 0; } h3 { font-size: 19px; font-weight: 600; margin-bot
 button:focus-visible,summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 @media(max-width:1150px) { .library-card { grid-template-columns: minmax(0,1.25fr) minmax(260px,1fr); gap: 20px; }.template-image { min-height: 320px; }.task-layout { grid-template-columns: 1fr 1fr; gap: 20px; }.preview-column { padding-left: 20px; }.resource-layout { grid-template-columns: minmax(0,1fr); }.resource-side { display: block; }.setup-template { flex-wrap: wrap; }.template-stat { margin-left: 0; }.path-row { grid-template-columns: 90px minmax(0,1fr) 116px; gap: 12px; }.node-progress { flex-wrap: wrap; }.task-select > svg { display: none; } }
 @media(max-width:900px) { .library-card,.task-layout { grid-template-columns: 1fr; }.template-image { min-height: 0; aspect-ratio: 16/9; }.preview-column { border-left: 0; border-top: 1px solid var(--border); padding: 24px 0 0; }.heading-with-action,.form-footer { align-items: flex-start; flex-direction: column; }.path-row { grid-template-columns: 1fr 116px; }.path-row > label { grid-column: 1/-1; line-height: 1.3; }.hardware-strip { flex-wrap: wrap; }.hardware-strip .badge { margin-left: 0; }.tab-toolbar { flex-wrap: wrap; }.compact { width: 100%; } }
+.history-delete { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }.history-delete p { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }.delete-confirm { color: var(--error, #ff9b9b); }
 </style>
 
 
