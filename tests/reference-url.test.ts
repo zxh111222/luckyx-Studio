@@ -8,3 +8,7 @@ test('允许教程列出的官方HTTPS域名与标准443端口',()=>{
 test('拒绝非HTTPS、认证信息、伪造域名与非标准端口',()=>{
  for(const value of ['http://docs.comfy.org','file:///C:/secret','javascript:alert(1)','https://docs.comfy.org.evil.test/','https://evil-docs.comfy.org/','https://docs.comfy.org@evil.test/','https://user@docs.comfy.org/','https://user:secret@docs.comfy.org/','https://docs.comfy.org:8443/','https://localhost/','https://github.com.evil.test/','https://example.com','invalid','',null,undefined,42,{}]) assert.throws(()=>validateReferenceUrl(value),Error);
 });
+test('驱动帮助仅允许NVIDIA官方驱动入口，不扩大到任意下载或重定向地址',()=>{
+ assert.equal(validateReferenceUrl('https://www.nvidia.com/en-us/drivers/'),'https://www.nvidia.com/en-us/drivers/');
+ for(const value of ['https://www.nvidia.com/redirect?url=https://evil.test','https://www.nvidia.com/en-us/drivers/?target=evil','https://www.nvidia.com/en-us/drivers/#script','https://www.nvidia.com.evil.test/en-us/drivers/','https://download.nvidia.com/driver.exe'])assert.throws(()=>validateReferenceUrl(value));
+});

@@ -1,4 +1,4 @@
-import test from 'node:test'
+import test, { type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -8,13 +8,16 @@ import { renderToString } from '@vue/server-renderer'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import { transformSync } from 'esbuild'
 import type { Snapshot, TaskRecord, TaskStatus } from '../src/shared/contracts'
-import type { BootstrapState } from '../src/shared/bootstrap'
+import type { BootstrapPlan, BootstrapState } from '../src/shared/bootstrap'
+import { selectCudaRuntime, NVIDIA_DRIVER_URL } from '../src/shared/cuda-runtime'
+import { recommendH3Installation } from '../src/shared/h3-installation'
 
 const require = createRequire(import.meta.url)
 const root = path.resolve('src/renderer/components')
 const componentCache = new Map<string, Vue.Component>()
 const icon = Vue.defineComponent({ render: () => Vue.h('svg', { 'aria-hidden': 'true' }) })
-let nativeInvoke: (command: string) => Promise<unknown> = async () => { throw new Error('SSR must not call native actions') }
+let nativeDesktop = false
+let nativeInvoke: (command: string, payload?: unknown) => Promise<unknown> = async () => { throw new Error('SSR must not call native actions') }
 function component(name: string): Vue.Component {
   const cached = componentCache.get(name)
   if (cached) return cached
@@ -26,7 +29,7 @@ function component(name: string): Vue.Component {
   const localRequire = (specifier: string) => {
     if (specifier === 'vue') return Vue
     if (specifier === '@phosphor-icons/vue') return new Proxy({}, { get: () => icon })
-    if (specifier === '../src/api') return { desktop: false, invoke: (command: string) => nativeInvoke(command) }
+    if (specifier === '../src/api') return { get desktop() { return nativeDesktop }, invoke: (command: string, payload?: unknown) => nativeInvoke(command, payload) }
     if (specifier.endsWith('.vue')) return component(path.basename(specifier))
     return require(path.resolve(path.dirname(file), specifier) + '.ts')
   }
@@ -85,9 +88,15 @@ function uiNode(tag: string, text = ''): UiNode {
     get options() { return this.children.filter(child => child.tag === 'option') },
     addEventListener() {}, removeEventListener() {}, getRootNode: () => null }
 }
-function mountedBootstrap(state: BootstrapState) {
+function mountedBootstrap(state: BootstrapState, hardware?: Snapshot['hardware']) {
   const calls: string[] = []
-  nativeInvoke = async command => { calls.push(command); assert.equal(command, 'bootstrap.status'); return state }
+  const actions: Array<{ command: string; payload?: unknown }> = []
+  nativeInvoke = async (command, payload) => {
+    calls.push(command)
+    if (command === 'bootstrap.status') return state
+    if (command === 'native.openReference') { actions.push({ command, payload }); return }
+    throw new Error(`组件触发了测试范围外的操作：${command}`)
+  }
   const renderer = Vue.createRenderer<UiNode, UiNode>({
     createElement: tag => uiNode(tag), createText: text => uiNode('#text', text), createComment: () => uiNode('#comment'),
     setText: (node, text) => { node.text = text },
@@ -112,11 +121,92 @@ function mountedBootstrap(state: BootstrapState) {
   })
   const container = uiNode('root')
   const stateSnapshot = snapshot(); stateSnapshot.settings.initialized = false
+  if (hardware) stateSnapshot.hardware = hardware
   const app = renderer.createApp(component('BootstrapSetup.vue'), { snapshot: stateSnapshot })
   app.mount(container)
   const text = (node: UiNode): string => node.text + node.children.map(text).join('')
-  return { app, calls, text: () => text(container) }
+  const nodes = (node: UiNode): UiNode[] => [node, ...node.children.flatMap(nodes)]
+  const buttons = (node: UiNode): UiNode[] => [...(node.tag === 'button' ? [node] : []), ...node.children.flatMap(buttons)]
+  return { app, calls, actions, text: () => text(container), buttons: () => buttons(container), nodes: () => nodes(container), buttonText: text }
 }
+
+function stubCustomRendererDomClasses(t: TestContext) {
+  // v-model text checks the root's DOM type when an existing plan fills its path.
+  // This renderer has no browser DOM; only those constructor checks need stubs.
+  for (const name of ['Document', 'ShadowRoot']) {
+    if (!(name in globalThis)) {
+      Object.defineProperty(globalThis, name, { configurable: true, value: class {} })
+      t.after(() => { Reflect.deleteProperty(globalThis, name) })
+    }
+  }
+}
+function cachedBootstrapState(hardware: Snapshot['hardware'], fullProgress = true): BootstrapState {
+  const selection = selectCudaRuntime(hardware)
+  const plan: BootstrapPlan = {
+    id: 'restored-plan', version: '0.39.0', profile: 'h3', rootPath: 'C:/AI', targetPath: 'C:/AI/luckyx-environment',
+    downloadBytes: 21.6 * 1024 ** 3, requiredFreeBytes: 30 * 1024 ** 3, freeBytes: 100 * 1024 ** 3,
+    cachedBytes: 21.6 * 1024 ** 3, hardwareIssues: selection.hardwareIssues, runtime: selection.runtime,
+    recommendation: recommendH3Installation({ ...hardware, driver: '582.01', cudaVersion: '13.0' }).recommendation,
+    files: [{ id: 'model', name: 'minimax_h3_fl2va_pruned_w4a8_mixed.safetensors', kind: 'model', relativePath: 'ComfyUI/models/diffusion_models/minimax_h3_fl2va_pruned_w4a8_mixed.safetensors', sizeBytes: 1024, sha256: 'a'.repeat(64), url: 'https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/revision/model.safetensors' }],
+    tutorialUrl: 'https://docs.comfy.org',
+  }
+  return { status: 'error', phase: '环境配置待完成', message: '下载文件已保存，等待 GPU 检查。', receivedBytes: fullProgress ? plan.downloadBytes : 0, totalBytes: fullProgress ? plan.downloadBytes : 0, completedFiles: 1, plan, resumable: true, tutorialUrl: plan.tutorialUrl }
+}
+
+test('已完整下载的实际安装组件显示继续配置环境，缓存字节恢复也不误称重新下载', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] }); stubCustomRendererDomClasses(t)
+  const hardware = { gpuName: 'NVIDIA GeForce RTX 4060', vramMb: 8192, ramGb: 32, driver: '582.01', cudaVersion: '13.0' }
+  nativeDesktop = true
+  try {
+    for (const fullProgress of [true, false]) {
+      const mounted = mountedBootstrap(cachedBootstrapState(hardware, fullProgress), hardware)
+      try {
+        await Promise.resolve(); await Vue.nextTick()
+        const text = mounted.text()
+        assert.match(text, /NVIDIA 驱动 582\.01/); assert.match(text, /nvidia-smi CUDA 13\.0/)
+        assert.match(text, /CUDA 13 · RTX 官方环境/); assert.match(text, /驱动条件符合/)
+        assert.match(text, /文件已缓存，继续后会重新校验并配置环境/)
+        assert.match(text, /无需重新下载完整模型/)
+        const proceed = mounted.buttons().find(button => mounted.buttonText(button) === '继续配置环境')
+        assert.ok(proceed, '主按钮应继续配置已缓存环境')
+        assert.ok(!mounted.buttons().some(button => mounted.buttonText(button) === '继续下载并安装'))
+        const consent = mounted.nodes().find(node => node.tag === 'input' && node.props.type === 'checkbox')
+        assert.ok(consent)
+        ;(consent.props['onUpdate:modelValue'] as (value: boolean) => void)(true)
+        await Vue.nextTick()
+        assert.equal(proceed.props.disabled, false, '符合驱动且用户同意后允许继续配置')
+        assert.deepEqual(mounted.calls, ['bootstrap.status'], '展示恢复状态不得自行重下载或启动安装')
+      } finally { mounted.app.unmount() }
+    }
+  } finally { nativeDesktop = false; nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
+})
+
+test('实际安装组件明确3070旧驱动与CUDA12.3，保留缓存并链接官方驱动页', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] }); stubCustomRendererDomClasses(t)
+  const hardware = { gpuName: 'NVIDIA GeForce RTX 3070', vramMb: 8192, ramGb: 32, driver: '546.30', cudaVersion: '12.3' }
+  nativeDesktop = true
+  const mounted = mountedBootstrap(cachedBootstrapState(hardware), hardware)
+  try {
+    await Promise.resolve(); await Vue.nextTick()
+    const text = mounted.text()
+    assert.match(text, /NVIDIA 驱动 546\.30/); assert.match(text, /nvidia-smi CUDA 12\.3/)
+    assert.match(text, /CUDA 13 · RTX 官方环境/); assert.match(text, /需要更新驱动/)
+    assert.match(text, /原安装位置、模型和下载进度会保留/)
+    assert.doesNotMatch(text, /CUDA 12\.6 · 旧显卡基础环境/)
+    const proceed = mounted.buttons().find(button => mounted.buttonText(button) === '继续配置环境')
+    assert.ok(proceed)
+    const consent = mounted.nodes().find(node => node.tag === 'input' && node.props.type === 'checkbox')
+    assert.ok(consent)
+    ;(consent.props['onUpdate:modelValue'] as (value: boolean) => void)(true)
+    await Vue.nextTick()
+    assert.equal(proceed.props.disabled, true, '用户同意也不能绕过驱动前置检查')
+    const driverLink = mounted.buttons().find(button => mounted.buttonText(button).includes('打开 NVIDIA 官方驱动下载页'))
+    assert.ok(driverLink)
+    await (driverLink.props.onClick as () => Promise<void>)()
+    assert.deepEqual(mounted.actions, [{ command: 'native.openReference', payload: { url: NVIDIA_DRIVER_URL } }])
+    assert.ok(!mounted.calls.includes('bootstrap.start'))
+  } finally { mounted.app.unmount(); nativeDesktop = false; nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
+})
 
 test('安装实际组件轮询后错误说明只显示一次，总进度与当前文件区别明确', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] })

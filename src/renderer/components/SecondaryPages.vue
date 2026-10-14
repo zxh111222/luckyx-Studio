@@ -121,7 +121,7 @@ watch(() => props.page, () => { query.value = ''; pathError.value = ''; removing
 <template>
   <section v-if="page === 'setup'" class="secondary-page">
     <header class="page-heading"><p class="eyebrow">开始创作 · 本地环境</p><h1>安装与连接</h1><p class="muted">{{ snapshot.settings.initialized ? '已有环境已识别，可以检查或调整连接。' : '自动准备适合设备的环境，也可以连接已有 ComfyUI。' }}</p></header>
-    <div class="panel hardware-strip"><PhCpu :size="30" /><div><strong>{{ gpu }}</strong><p class="muted">{{ vram }} · {{ snapshot.hardware.ramGb > 0 ? `${snapshot.hardware.ramGb.toFixed(0)} GB 内存` : '内存待检测' }}</p></div><span class="badge">{{ snapshot.hardware.driver ? `驱动 ${snapshot.hardware.driver}` : '驱动待检测' }}</span></div>
+    <div class="panel hardware-strip"><PhCpu :size="30" /><div><strong>{{ gpu }}</strong><p class="muted">{{ vram }} · {{ snapshot.hardware.ramGb > 0 ? `${snapshot.hardware.ramGb.toFixed(0)} GB 内存` : '内存待检测' }}</p></div><span class="badge">{{ snapshot.hardware.driver ? `驱动 ${snapshot.hardware.driver}` : '驱动待检测' }}<span v-if="snapshot.hardware.cudaVersion"> · CUDA {{ snapshot.hardware.cudaVersion }}</span></span></div>
     <BootstrapSetup :snapshot="snapshot" @complete="emit('action', 'snapshot')" @create="emit('create')" />
     <h2 class="section-heading">连接已有环境</h2>
     <form class="panel path-panel" @submit.prevent="save">
