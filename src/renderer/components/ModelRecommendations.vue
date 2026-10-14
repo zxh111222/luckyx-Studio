@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { PhCpu, PhArrowSquareOut, PhCheckCircle, PhInfo, PhPlay, PhArrowRight, PhDownloadSimple, PhBookOpen } from '@phosphor-icons/vue'
 import type { Snapshot } from '../../shared/contracts'
 import { rankModelRecommendations } from '../../shared/model-recommendations'
-import { publicAssetUrl } from '../../shared/public-asset'
+import { assetUrl } from '../src/asset-url'
 
 const props = defineProps<{ snapshot: Snapshot }>()
 const emit = defineEmits<{ action: [command: string, payload?: unknown]; create: [] }>()
@@ -25,7 +25,6 @@ const coverOrigins: Record<string, string> = {
 const roles: Record<string, string> = { 'wan22-ti2v-5b': '首推探索', 'wan21-t2v-13b': '轻量备选', 'ltx-video-2b-095': '可选探索', 'minimax-h3-existing': '音画同步' }
 const screenshotFailed = ref<Record<string, boolean>>({})
 function openReference(url: string) { emit('action', 'native.openReference', { url }) }
-const assetUrl = (path: string) => publicAssetUrl(path, document.baseURI)
 function modelState(id: string) { return id === 'minimax-h3-existing' ? (h3Generated.value ? '工作台可用 · 此设备已有作品' : '支持创作工作台 · 请先检查环境') : '使用方式：原生 ComfyUI' }
 </script>
 

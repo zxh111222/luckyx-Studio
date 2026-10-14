@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import * as asar from '@electron/asar';
+import { rootAssetBindings } from './renderer-asset-audit.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const errors=[];
@@ -33,6 +34,7 @@ await section('解包桌面程序为Windows x64',async()=>{
  for(const filename of ['resources/app.asar','icudtl.dat','resources.pak'])check((await fs.stat(path.join(unpacked,filename))).size>0,`${filename}为空`);
 });
 let inventory;
+const publicPaths=[];
 await section('ASAR主入口、preload和运行依赖',async()=>{
  inventory=new Set(asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,'')));
  const packaged=JSON.parse(extract('package.json').toString('utf8'));
@@ -52,10 +54,18 @@ await section('渲染HTML资源与全部public资源同步',async()=>{
   for(const entry of await fs.readdir(directory,{withFileTypes:true})){
    const relative=path.posix.join(prefix,entry.name);const source=path.join(directory,entry.name);
    if(entry.isDirectory())await walk(source,relative);
-   else if(entry.isFile()){const bundled=`out/renderer/${relative}`;check(inventory.has(bundled),`ASAR缺少public资源${relative}`);check((await fs.readFile(source)).equals(extract(bundled)),`打包资源过期或不一致：${relative}`);}
+   else if(entry.isFile()){publicPaths.push(relative);const bundled=`out/renderer/${relative}`;check(inventory.has(bundled),`ASAR缺少public资源${relative}`);check((await fs.readFile(source)).equals(extract(bundled)),`打包资源过期或不一致：${relative}`);}
   }
  }
  await walk(path.join(root,'src/renderer/public'));
+});
+await section('ASAR渲染绑定不能把public图片指向磁盘根目录',async()=>{
+ check(inventory&&publicPaths.length,'缺少资源清单');
+ for(const filename of inventory){
+  if(!/^out\/renderer\/assets\/.*\.js$/.test(filename))continue;
+  const invalid=rootAssetBindings(extract(filename).toString('utf8'),publicPaths);
+  check(!invalid.length,`${filename}含file文档破图绑定：${invalid.map(item=>`第${item.line}行 ${item.expression}`).join('；')}`);
+ }
 });
 await section('SQLite WASM真实存在且格式正确',async()=>{
  const wasm=await fs.readFile(path.join(unpacked,'resources/app.asar.unpacked/node_modules/sql.js/dist/sql-wasm.wasm'));

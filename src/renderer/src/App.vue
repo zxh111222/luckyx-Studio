@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { assetUrl } from './asset-url'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch, type Component } from 'vue'
 import {
   PhHouse, PhFolderOpen, PhPlay, PhListBullets, PhDatabase, PhGear,
@@ -308,14 +309,14 @@ onUnmounted(() => { closing = true; unsubscribe(); unsubscribeClose(); window.cl
 <template>
   <div class="studio-app"><input ref="workflowInput" class="visually-hidden" type="file" accept=".json,application/json" aria-label="从首页导入工作流" :disabled="uiBusy" @change="importWorkflow" />
     <header class="titlebar" :inert="presetOpen || Boolean(closeRequest)">
-      <span class="title-brand"><img src="/brand/luckyx-app.svg" width="20" height="20" alt="" />luckyx. Studio <span class="title-subtitle"><span class="title-separator">·</span> 视频工作流启动器</span></span>
+      <span class="title-brand"><img :src="assetUrl('/brand/luckyx-app.svg')" width="20" height="20" alt="" />luckyx. Studio <span class="title-subtitle"><span class="title-separator">·</span> 视频工作流启动器</span></span>
       <div class="title-actions"><span class="build-label">{{ desktop ? '本地创作' : '浏览器预览' }}</span><button :disabled="!desktop" aria-label="最小化窗口" @click="windowControl('minimize')"><PhMinus :size="16" /></button><button :disabled="!desktop" aria-label="最大化窗口" @click="windowControl('maximize')"><PhSquare :size="14" /></button><button class="window-close" :disabled="!desktop" aria-label="关闭窗口" @click="windowControl('close')"><PhX :size="16" /></button></div>
     </header>
     <div class="app-frame" :inert="presetOpen || Boolean(closeRequest)">
       <aside class="sidebar">
-        <a class="brand" href="#home" aria-label="luckyx. Studio 首页" @click.prevent="navigate('home')"><img class="brand-icon" src="/brand/luckyx-symbol.svg" width="32" height="32" alt="" /><span class="brand-wordmark"><strong>luckyx.</strong><span>Studio</span></span></a>
+        <a class="brand" href="#home" aria-label="luckyx. Studio 首页" @click.prevent="navigate('home')"><img class="brand-icon" :src="assetUrl('/brand/luckyx-symbol.svg')" width="32" height="32" alt="" /><span class="brand-wordmark"><strong>luckyx.</strong><span>Studio</span></span></a>
         <nav aria-label="主要导航"><button v-for="item in nav" :key="item.id" :class="['nav-item', { active: page === item.id }]" :aria-current="page === item.id ? 'page' : undefined" :aria-label="item.label" :title="item.label" @click="navigate(item.id)"><component :is="item.icon" :size="21" weight="regular" /><span>{{ item.label }}</span></button></nav>
-        <div class="sidebar-bottom"><button :class="['setup-link', { active: page === 'setup' }]" :aria-current="page === 'setup' ? 'page' : undefined" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><span class="version">v0.1.6 · 本地创作</span></div>
+        <div class="sidebar-bottom"><button :class="['setup-link', { active: page === 'setup' }]" :aria-current="page === 'setup' ? 'page' : undefined" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><span class="version">v0.1.7 · 本地创作</span></div>
       </aside>
       <main ref="mainContent" class="main-content" :class="{ 'workbench-main': page === 'workbench' && workbenchKind === 'generate' }">
         <div v-if="!state" class="boot-state"><PhSpinnerGap v-if="!bootError" :size="32" class="spinning" /><PhWarningCircle v-else :size="32" /><h1>{{ bootError ? '连接尚未完成' : '准备你的创作工作台' }}</h1><p class="muted">{{ bootError || '正在读取本地环境和任务记录…' }}</p><button v-if="bootError" class="btn primary" @click="refresh().then(() => bootError = '').catch(() => {})">重试连接</button></div>

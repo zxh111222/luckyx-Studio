@@ -8,11 +8,13 @@ import { renderToString } from '@vue/server-renderer'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import { transformSync } from 'esbuild'
 import type { Snapshot, TaskRecord, TaskStatus } from '../src/shared/contracts'
+import type { BootstrapState } from '../src/shared/bootstrap'
 
 const require = createRequire(import.meta.url)
 const root = path.resolve('src/renderer/components')
 const componentCache = new Map<string, Vue.Component>()
 const icon = Vue.defineComponent({ render: () => Vue.h('svg', { 'aria-hidden': 'true' }) })
+let nativeInvoke: (command: string) => Promise<unknown> = async () => { throw new Error('SSR must not call native actions') }
 function component(name: string): Vue.Component {
   const cached = componentCache.get(name)
   if (cached) return cached
@@ -24,7 +26,7 @@ function component(name: string): Vue.Component {
   const localRequire = (specifier: string) => {
     if (specifier === 'vue') return Vue
     if (specifier === '@phosphor-icons/vue') return new Proxy({}, { get: () => icon })
-    if (specifier === '../src/api') return { desktop: false, invoke: async () => { throw new Error('SSR must not call native actions') } }
+    if (specifier === '../src/api') return { desktop: false, invoke: (command: string) => nativeInvoke(command) }
     if (specifier.endsWith('.vue')) return component(path.basename(specifier))
     return require(path.resolve(path.dirname(file), specifier) + '.ts')
   }
@@ -63,6 +65,106 @@ test('正式工作流库展示真实导入记录与图文模式入口，离线�
   assert.match(html, /disabled[^>]*>打开节点编辑器/)
   assert.match(html, /aria-label="导出 我的流程/)
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/)
+})
+
+interface UiNode {
+  tag: string
+  text: string
+  children: UiNode[]
+  parent: UiNode | null
+  props: Record<string, unknown>
+  value: unknown
+  checked: boolean
+  readonly options: UiNode[]
+  addEventListener(): void
+  removeEventListener(): void
+  getRootNode(): null
+}
+function uiNode(tag: string, text = ''): UiNode {
+  return { tag, text, children: [], parent: null, props: {}, value: '', checked: false,
+    get options() { return this.children.filter(child => child.tag === 'option') },
+    addEventListener() {}, removeEventListener() {}, getRootNode: () => null }
+}
+function mountedBootstrap(state: BootstrapState) {
+  const calls: string[] = []
+  nativeInvoke = async command => { calls.push(command); assert.equal(command, 'bootstrap.status'); return state }
+  const renderer = Vue.createRenderer<UiNode, UiNode>({
+    createElement: tag => uiNode(tag), createText: text => uiNode('#text', text), createComment: () => uiNode('#comment'),
+    setText: (node, text) => { node.text = text },
+    setElementText: (node, text) => { node.text = text; node.children = [] },
+    insertStaticContent(content, parent, anchor) {
+      const node = uiNode('#static', content.replace(/<[^>]*>/g, ''))
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      if (index < 0) parent.children.push(node); else parent.children.splice(index, 0, node)
+      node.parent = parent
+      return [node, node]
+    },
+    parentNode: node => node.parent,
+    nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
+    insert(node, parent, anchor) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      if (index < 0) parent.children.push(node); else parent.children.splice(index, 0, node)
+      node.parent = parent
+    },
+    remove(node) { if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1); node.parent = null },
+    patchProp(node, key, _oldValue, value) { node.props[key] = value; if (key === 'value') node.value = value },
+  })
+  const container = uiNode('root')
+  const stateSnapshot = snapshot(); stateSnapshot.settings.initialized = false
+  const app = renderer.createApp(component('BootstrapSetup.vue'), { snapshot: stateSnapshot })
+  app.mount(container)
+  const text = (node: UiNode): string => node.text + node.children.map(text).join('')
+  return { app, calls, text: () => text(container) }
+}
+
+test('安装实际组件轮询后错误说明只显示一次，总进度与当前文件区别明确', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const state: BootstrapState = { status: 'error', phase: '安装未完成', message: '下载连接中断，请继续安装。', error: '下载连接中断，请继续安装。', receivedBytes: 1.9 * 1024 ** 3, totalBytes: 21.6 * 1024 ** 3, completedFiles: 1, currentFile: 'minimax_h3_fl2va_pruned_w4a8_mixed.safetensors', tutorialUrl: 'https://docs.comfy.org', resumable: true }
+  const mounted = mountedBootstrap(state)
+  try {
+    await Promise.resolve(); await Vue.nextTick()
+    assert.equal(mounted.calls.length, 1)
+    const text = mounted.text()
+    assert.equal(text.split(state.message).length - 1, 1)
+    assert.match(text, /当前文件：minimax_h3_fl2va_pruned_w4a8_mixed\.safetensors/)
+    assert.match(text, /总下载进度 1\.9 GiB \/ 21\.6 GiB/)
+    assert.match(text, /已保存的下载片段会继续使用/)
+    assert.match(text, /完成后自动校验和解压/)
+  } finally { mounted.app.unmount(); nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
+  const calls = mounted.calls.length
+  t.mock.timers.tick(3000)
+  await Promise.resolve(); await Vue.nextTick()
+  assert.equal(mounted.calls.length, calls, '卸载组件后必须清理轮询计时器')
+})
+
+test('安装暂停保留断点提示，不同的错误详情仍各自显示一次', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  for (const status of ['cancelled', 'error'] as const) {
+    const state: BootstrapState = { status, phase: status === 'cancelled' ? '安装已暂停' : '安装未完成', message: '下载进度已保存。', error: status === 'error' ? '代理连接暂时不可用。' : undefined, receivedBytes: 2 * 1024 ** 3, totalBytes: 22 * 1024 ** 3, completedFiles: 1, tutorialUrl: 'https://docs.comfy.org', resumable: true }
+    const mounted = mountedBootstrap(state)
+    try {
+      await Promise.resolve(); await Vue.nextTick()
+      const text = mounted.text()
+      assert.match(text, /已保存的下载片段会继续使用/)
+      assert.equal(text.split(state.message).length - 1, 1)
+      if (state.error) assert.equal(text.split(state.error).length - 1, 1)
+    } finally { mounted.app.unmount() }
+  }
+  nativeInvoke = async () => { throw new Error('SSR must not call native actions') }
+})
+
+test('已解压环境继续补充模型时，安装错误不会在环境卡和进度卡重复显示', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const state: BootstrapState = { status: 'error', phase: '模型下载未完成', message: '模型连接暂时中断。', error: '模型连接暂时中断。', receivedBytes: 3 * 1024 ** 3, totalBytes: 22 * 1024 ** 3, completedFiles: 1, installationPath: 'C:/AI/luckyx-environment', tutorialUrl: 'https://docs.comfy.org', resumable: true }
+  const mounted = mountedBootstrap(state)
+  try {
+    await Promise.resolve(); await Vue.nextTick()
+    const text = mounted.text()
+    assert.match(text, /运行环境已解压/)
+    assert.match(text, /已保存的下载片段会继续使用/)
+    assert.equal(text.split(state.message).length - 1, 1)
+  } finally { mounted.app.unmount(); nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
 })
 
 test('个人工作流分页限制单页 12 项，搜索匹配真实名称', async () => {
@@ -142,4 +244,33 @@ test('关闭确认提供后台、退出和记住选择，提示活动下载及�
   const html = await renderToString(Vue.createSSRApp(component('CloseApplicationDialog.vue'), { request: { id: 'native-request', source: 'window', activeTasks: 2, activeDownloads: true, managedEngine: false, externalEngine: true }, opener: null }))
   for (const text of ['继续后台运行', '退出并停止后台', '记住我的选择', '2 个任务尚未结束', '下次打开可继续', '外部启动的 ComfyUI 会保留']) assert.ok(html.includes(text), text)
   assert.match(html, /role="dialog" aria-modal="true"/); assert.match(html, /取消关闭/)
+})
+
+test('已安装 file 文档的主页、工作流、资源与安装页图片均指向真实 ASAR 相对资源', async () => {
+  const documentUrl = 'file:///F:/luckyx%20Studio/resources/app.asar/out/renderer/index.html'
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { baseURI: documentUrl } })
+  try {
+    const state = snapshot()
+    const screens = [
+      ['主页', await renderToString(Vue.createSSRApp(component('StudioHome.vue'), { snapshot: state, busy: false })), 4],
+      ['工作流', await page('library', state), 2],
+      ['安装页', await page('setup', state), 1],
+      ['资源中心', await page('resources', state), 5],
+    ] as const
+    for (const [name, html, minimum] of screens) {
+      const images = [...html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/g)].map(match => match[1])
+      assert.ok(images.length >= minimum, `${name}未渲染应有的配图`)
+      for (const image of images) {
+        assert.ok(image.startsWith('file:///F:/luckyx%20Studio/resources/app.asar/out/renderer/'), `${name}破图路径：${image}`)
+        const relative = decodeURIComponent(image.slice(new URL('.', documentUrl).href.length))
+        const file = path.resolve('src/renderer/public', relative)
+        assert.ok(fs.existsSync(file), `${name}图片文件缺失：${relative}`)
+        assert.ok(fs.statSync(file).size > 0, `${name}图片文件为空：${relative}`)
+      }
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'document', previous)
+    else Reflect.deleteProperty(globalThis, 'document')
+  }
 })

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { assetUrl } from '../src/asset-url'
 import { computed } from 'vue'
 import { PhArrowUpRight, PhPlus, PhUploadSimple, PhPlay, PhCheckCircle, PhArrowRight, PhCpu, PhSpinnerGap, PhWarningCircle, PhFilmStrip } from '@phosphor-icons/vue'
 import type { Snapshot, TaskRecord } from '../../shared/contracts'
@@ -25,7 +26,7 @@ const date = (value: string) => new Date(value).toLocaleString('zh-CN', { month:
       <div class="intro-actions"><button class="btn secondary" :disabled="busy" @click="emit('import')"><PhUploadSimple :size="18" />导入工作流</button><button class="btn primary" :disabled="busy" @click="emit('create')"><PhPlus :size="19" />开始创作</button></div>
     </header>
     <section class="feature" aria-label="创作灵感">
-      <img src="/coast-inspiration.webp" alt="蜿蜒海岸公路与暮色下的海浪" fetchpriority="high" />
+      <img :src="assetUrl('/coast-inspiration.webp')" alt="蜿蜒海岸公路与暮色下的海浪" fetchpriority="high" />
       <div class="feature-shade"></div><span class="image-note">风格示例</span>
       <div class="feature-content"><p>从此刻出发</p><h2>你的下一个故事，<br />在这里开始。</h2><button class="btn feature-button" :disabled="busy" @click="emit('create')">打开创作工作台<PhArrowUpRight :size="19" /></button></div>
       <div class="feature-caption"><span>灵感可以很远，创作就在眼前。</span><span>luckyx. Studio</span></div>
@@ -34,7 +35,7 @@ const date = (value: string) => new Date(value).toLocaleString('zh-CN', { month:
       <div class="section-heading"><div><h2 id="gallery-title">灵感画廊</h2><p>选择一段镜头提示，继续你的创作。</p></div><button class="text-button" @click="emit('navigate', 'tasks')">我的作品<PhArrowRight :size="18" /></button></div>
       <div class="project-grid">
         <button v-for="item in inspirations" :key="item.id" class="project" :disabled="busy" @click="emit('inspiration', item.prompt)">
-          <div class="project-image"><img :src="item.image" :alt="item.title" loading="lazy" /><span class="image-badge">风格示例</span><span class="play"><PhPlay :size="17" weight="fill" /></span></div>
+          <div class="project-image"><img :src="assetUrl(item.image)" :alt="item.title" loading="lazy" /><span class="image-badge">风格示例</span><span class="play"><PhPlay :size="17" weight="fill" /></span></div>
           <div class="project-copy"><div><h3>{{ item.title }}</h3><p>{{ item.detail }}</p></div><PhArrowUpRight :size="20" /></div>
         </button>
       </div>
