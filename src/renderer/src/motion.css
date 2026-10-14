@@ -1,0 +1,41 @@
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* Only occasional surfaces move. Pages, navigation and lists never enter. */
+.modal-enter-active,.modal-leave-active { transition: opacity 220ms var(--ease-out); }
+.modal-enter-active .preset-dialog,.modal-leave-active .preset-dialog { transition: transform 220ms var(--ease-out), opacity 220ms var(--ease-out); }
+.modal-leave-active,.modal-leave-active .preset-dialog { transition-duration:160ms; }
+.modal-enter-from,.modal-leave-to { opacity:0; }
+.modal-enter-from .preset-dialog,.modal-leave-to .preset-dialog { opacity:0; transform:scale(.96); }
+.toast-enter-active,.toast-leave-active { transition:transform 180ms var(--ease-out), opacity 180ms var(--ease-out); }
+.toast-leave-active { transition-duration:140ms; }
+.toast-enter-from,.toast-leave-to { opacity:0; transform:translateX(-50%) translateY(20%); }
+.drawer-enter-active,.drawer-leave-active { transition:transform 220ms var(--ease-drawer), opacity 220ms var(--ease-drawer); }
+.drawer-leave-active { transition-duration:160ms; }
+.drawer-enter-from,.drawer-leave-to { opacity:0; transform:translateX(15%); }
+.studio-app :is(button,.btn,.text-button) { transition:transform 120ms var(--ease-out); }
+.studio-app .pointer-pressed:not(:disabled) { transform:scale(.98); transition-duration:0ms; }
+.drawer-context { font-size:12px;line-height:1.7;color:var(--muted);margin:0 0 16px; }
+.task-summary:focus { outline:2px solid var(--accent);outline-offset:3px; }
+:root[data-ui-motion="reduce"] :is(.modal-enter-active,.modal-leave-active,.toast-enter-active,.toast-leave-active,.drawer-enter-active,.drawer-leave-active),
+:root[data-ui-motion="reduce"] :is(.modal-enter-active,.modal-leave-active) .preset-dialog {
+  transition:opacity 80ms var(--ease-out) !important;
+}
+:root[data-ui-motion="reduce"] :is(.modal-enter-from,.modal-leave-to) .preset-dialog,
+:root[data-ui-motion="reduce"] :is(.drawer-enter-from,.drawer-leave-to),
+:root[data-ui-motion="reduce"] .studio-app .pointer-pressed { transform:none !important; }
+:root[data-ui-motion="reduce"] :is(.toast-enter-from,.toast-leave-to) { transform:translateX(-50%) !important; }
+:root[data-ui-motion="reduce"] .spinning { animation:none !important; }
+:root[data-ui-input="keyboard"] :is(.modal-enter-active,.modal-leave-active,.toast-enter-active,.toast-leave-active,.drawer-enter-active,.drawer-leave-active),
+:root[data-ui-input="keyboard"] :is(.modal-enter-active,.modal-leave-active) .preset-dialog,
+[data-ui-instant="true"].toast { transition:none !important; }
+:root[data-ui-input="keyboard"] .studio-app .pointer-pressed { transform:none !important; }
+:root[data-ui-transparency="solid"] .modal-backdrop { background:#080c0f; }
+:root[data-ui-transparency="solid"] .toast { background:#17251f; }
+:root[data-ui-transparency="solid"] .toast-error { background:#332428; }
+:root[data-ui-contrast="more"] { --border:#687581;--muted:#d0d8df;--text:#f5f8fa; }
+:root[data-ui-contrast="more"] :is(.modal-backdrop,.toast,.task-summary.drawer-open) { border-color:#7d8d99; }
+@media(prefers-reduced-transparency:reduce) { .modal-backdrop{background:#080c0f}.toast{background:#17251f}.toast-error{background:#332428} }
+@media(prefers-contrast:more) { .preset-dialog,.task-summary.drawer-open,.toast{border-color:#7d8d99} }
+@media(forced-colors:active) { .preset-dialog,.task-summary,.toast{border:1px solid CanvasText}.studio-app button:focus-visible{outline:2px solid Highlight} }

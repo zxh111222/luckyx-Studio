@@ -10,8 +10,18 @@ interface DesktopBridge {
 
 declare global { interface Window { luckyx?: DesktopBridge } }
 export const desktop = Boolean(window.luckyx?.desktop)
+export type UiStressInterceptor = (command: string, payload: unknown, next: (command: string, payload?: unknown) => Promise<unknown>) => Promise<unknown>
+let uiStressInterceptor: UiStressInterceptor | null = null
+let uiStressActive: () => boolean = () => false
+export function setUiStressInterceptor(handler: UiStressInterceptor | null, isActive: () => boolean = () => false): void {
+  if (import.meta.env.DEV) { uiStressInterceptor = handler; uiStressActive = handler ? isActive : () => false }
+}
 
 export async function invoke<T = unknown>(command: string, payload?: unknown): Promise<T> {
+  if (import.meta.env.DEV && uiStressInterceptor) return await uiStressInterceptor(command, payload, realInvoke) as T
+  return await realInvoke(command, payload) as T
+}
+async function realInvoke<T = unknown>(command: string, payload?: unknown): Promise<T> {
   if (window.luckyx?.invoke) return await window.luckyx.invoke(command, payload) as T
   if (command.startsWith('native.')) {
     if (command === 'native.openReference') {
@@ -49,6 +59,7 @@ export function subscribe(callback: (snapshot: Snapshot) => void): () => void {
   let pending = false
   const poll = async () => {
     if (closed || pending || document.hidden) return
+    if (import.meta.env.DEV && uiStressActive()) return
     pending = true
     try { const state = await invoke<Snapshot>('snapshot'); if (!closed) callback(state) }
     catch { /* Initial connection errors are surfaced by the explicit refresh. */ }
