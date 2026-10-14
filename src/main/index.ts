@@ -6,6 +6,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { randomUUID } from 'node:crypto'
 import { createStudioService } from '../backend/service'
+import { createBootstrapFetch } from './bootstrap-network'
 import type { Settings, Snapshot, StudioService, UserWorkflowDocument } from '../shared/contracts'
 import { getWindowBounds } from '../shared/window-bounds'
 import { validateReferenceUrl } from '../shared/reference-url'
@@ -206,7 +207,7 @@ app.whenReady().then(async () => {
   if (!single) return
   if (process.platform === 'win32') app.setAppUserModelId('studio.luckyx.desktop')
   const dataDir = process.env.LUCKYX_DATA_DIR || (app.isPackaged ? join(app.getPath('userData'), 'studio') : resolve('.runtime/desktop'))
-  service = await createStudioService({ dataDir, sevenZipPath: app.isPackaged ? join(process.resourcesPath, 'bootstrap/7za.exe') : resolve('node_modules/7zip-bin/win/x64/7za.exe') })
+  service = await createStudioService({ dataDir, bootstrapFetch: createBootstrapFetch(options => net.request(options)), sevenZipPath: app.isPackaged ? join(process.resourcesPath, 'bootstrap/7za.exe') : resolve('node_modules/7zip-bin/win/x64/7za.exe') })
   closePreferencePath = join(dataDir, 'close-preferences.json')
   closePreference = parseClosePreferences(await fs.readFile(closePreferencePath, 'utf8').catch(() => null)).behavior
   closeCoordinator = createCloseCoordinator({

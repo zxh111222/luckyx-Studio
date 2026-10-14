@@ -25,6 +25,7 @@ export async function createStudioService(options: {
     defaultEngineUrl?: string;
     outputBaseUrl?: string;
     sevenZipPath?: string;
+    bootstrapFetch?: typeof globalThis.fetch;
     spawnEngine?: typeof spawn;
     terminateEngine?: (child: ChildProcess) => Promise<void>;
     bootstrapManager?: ReturnType<typeof createBootstrapManager>;
@@ -70,7 +71,7 @@ export async function createStudioService(options: {
     let disposed = false;
     let closing = false, shutdownFlight: Promise<void> | undefined;
     const shutdownController = new AbortController();
-    const bootstrap = options.bootstrapManager ?? createBootstrapManager({ dataDir: options.dataDir, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe'), getHardware: async () => { await hardwareReady; return structuredClone(snapshot.hardware); } });
+    const bootstrap = options.bootstrapManager ?? createBootstrapManager({ dataDir: options.dataDir, fetch: options.bootstrapFetch, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe'), getHardware: async () => { await hardwareReady; return structuredClone(snapshot.hardware); } });
     let bootstrapPlan: BootstrapPlan | undefined;
     let bootstrapFlight: Promise<void> | undefined;
     let bootstrapConnectionError: string | undefined;

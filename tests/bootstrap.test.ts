@@ -139,3 +139,56 @@ test('恢复不接受已安装节点或模型缺失，不重新覆盖环境；�
  const f=await fixture(t);const plan=await f.manager.plan({rootPath:f.root,hardware});await f.manager.start(plan);await f.manager.dispose();const model=plan.files.find(file=>file.kind==='model')!;await fs.writeFile(path.join(plan.targetPath,model.relativePath),'');
  const restored=createBootstrapManager(f.options);await restored.ready;assert.equal(restored.snapshot().status,'error');assert.match(restored.snapshot().phase,/资源不完整/);assert.equal(restored.snapshot().resumable,false);await restored.dispose();assert.equal((await fs.stat(path.join(plan.targetPath,model.relativePath))).size,0);
 });
+
+test('临时fetch连接失败自动重试，完成前进度不重复累计',async t=>{
+ let attempt=0;const f=await fixture(t,{body:async()=>{if(++attempt===1)throw new TypeError('fetch failed');return new Response(archive);}});
+ const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});const progress:number[]=[];const unsub=f.manager.subscribe(s=>progress.push(s.receivedBytes));
+ const state=await f.manager.start(p);unsub();assert.equal(state.status,'completed');assert.equal(attempt,2);assert.equal(state.receivedBytes,archive.length);assert.ok(progress.every(bytes=>bytes<=archive.length));
+});
+
+test('读取中断从已落盘Range继续，提前EOF保留片段而非清空',async t=>{
+ for(const streamError of [true,false]){
+  let attempt=0;const f=await fixture(t,{body:async(_url,init)=>{if(++attempt===1){if(!streamError)return new Response(archive.subarray(0,8));let first=true;return new Response(new ReadableStream({pull(controller){if(first){first=false;controller.enqueue(archive.subarray(0,8));}else controller.error(new TypeError('terminated'));}}));}assert.equal(new Headers(init?.headers).get('range'),'bytes=8-');return new Response(archive.subarray(8),{status:206,headers:{'content-range':`bytes 8-${archive.length-1}/${archive.length}`}});}});
+  const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});const values:number[]=[];f.manager.subscribe(s=>values.push(s.receivedBytes));const state=await f.manager.start(p);
+  assert.equal(state.status,'completed');assert.equal(attempt,2);assert.equal(state.receivedBytes,archive.length);assert.ok(values.every(n=>n<=archive.length));assert.equal(digest(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'))),digest(archive));
+ }
+});
+
+test('服务器忽略Range时只重写当前片段，模型前已完成文件计数保留',async t=>{
+ let first=true;const f=await fixture(t,{body:async url=>{if(url!==officialUrl&&first){first=false;return new Response(archive.subarray(0,8));}return new Response(archive);}});
+ const p=await f.manager.plan({rootPath:f.root,hardware});const values:number[]=[];f.manager.subscribe(s=>values.push(s.receivedBytes));const result=await f.manager.start(p);
+ assert.equal(result.status,'completed');assert.equal(result.completedFiles,p.files.length);assert.equal(result.receivedBytes,p.downloadBytes);assert.ok(values.every(n=>n<=p.downloadBytes));assert.ok(f.requests.some(r=>r.range==='bytes=8-'));
+});
+
+test('临时HTTP503会重试，永久HTTP404立即停止且提示来源和保留进度',async t=>{
+ let attempt=0;const f=await fixture(t,{body:async()=>++attempt===1?new Response(null,{status:503,headers:{'retry-after':'0'}}):new Response(archive)});
+ const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});assert.equal((await f.manager.start(p)).status,'completed');assert.equal(attempt,2);
+ const missing=await fixture(t,{body:async()=>new Response(null,{status:404})});const q=await missing.manager.plan({rootPath:missing.root,hardware,profile:'environment'});const state=await missing.manager.start(q);assert.equal(state.status,'error');assert.match(state.error!,/GitHub.*HTTP 404.*系统代理.*保留/);assert.equal(missing.requests.filter(r=>r.url===officialUrl).length,1);
+});
+
+test('全部连接失败有限重试后给出可操作提示，不暴露原始异常或签名URL',async t=>{
+ let attempt=0;const f=await fixture(t,{body:async()=>{attempt++;throw new TypeError('fetch failed https://cdn.test?token=secret');}});
+ const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});const result=await f.manager.start(p);assert.equal(result.status,'error');assert.equal(attempt,4);assert.equal(result.resumable,true);assert.match(result.error!,/GitHub.*自动重试 3 次.*进度已保留.*系统代理/);assert.doesNotMatch(result.error!,/fetch failed|secret|cdn.test/);assert.equal(f.runs.length,0);
+});
+
+test('自动重试等待期间可立即取消，不发起新请求且保留已写入部分',async t=>{
+ const f=await fixture(t,{body:async()=>new Response(archive.subarray(0,8))});const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});
+ f.manager.subscribe(s=>{if(s.phase==='连接中断，自动重试')f.manager.cancel();});const state=await f.manager.start(p);
+ assert.equal(state.status,'cancelled');assert.equal(f.requests.filter(r=>r.url===officialUrl).length,1);assert.equal((await fs.stat(path.join(f.root,'.luckyx-bootstrap/portable.7z.part'))).size,8);assert.equal(state.receivedBytes,8);
+});
+
+test('206范围终点与Content-Length不符拒绝且保留断点，不触发网络重试',async t=>{
+ for(const headers of [{'content-range':`bytes 4-${archive.length}/${archive.length}`},{'content-range':`bytes 4-${archive.length-1}/${archive.length}`,'content-length':'999'}] as Record<string,string>[]){
+  const f=await fixture(t,{body:async()=>new Response(archive.subarray(4),{status:206,headers})});const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});
+  await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await put(f.root,'.luckyx-bootstrap/portable.7z.part','part');const state=await f.manager.start(p);
+  assert.equal(state.status,'error');assert.match(state.error!,/断点响应无效|文件大小与清单不符/);assert.equal(f.requests.filter(r=>r.url===officialUrl).length,1);assert.equal(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/portable.7z.part'),'utf8'),'part');
+ }
+});
+
+test('断流重试重新访问固定原始地址并重新核对CDN重定向',async t=>{
+ let original=0;const cdn='https://release-assets.githubusercontent.com/fixture/archive';const f=await fixture(t,{body:async(url,init)=>{
+  if(url===officialUrl){original++;return new Response(null,{status:302,headers:{location:cdn+'?attempt='+original}});}
+  if(original===1)return new Response(archive.subarray(0,8));
+  assert.equal(new Headers(init?.headers).get('range'),'bytes=8-');return new Response(archive.subarray(8),{status:206,headers:{'content-range':`bytes 8-${archive.length-1}/${archive.length}`}});
+ }});const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});assert.equal((await f.manager.start(p)).status,'completed');assert.equal(original,2);assert.ok(f.requests.some(r=>r.url===cdn+'?attempt=2'));
+});

@@ -12,6 +12,20 @@ import { createStudioService } from '../src/backend/service';
 import type { Snapshot, StudioService } from '../src/shared/contracts';
 import graph from '../src/backend/workflows/h3-i2v.json';
 
+test('服务默认安装器使用传入系统网络通道获取清单，保留固定官方下载地址', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'luckyx-network-service-'));
+    const requests: string[] = [];
+    const url = 'https://github.com/Comfy-Org/ComfyUI/releases/download/v0.39.0/ComfyUI_windows_portable_nvidia.7z';
+    const service = await createStudioService({ dataDir: path.join(root, 'data'), bootstrapFetch: (async (input: any) => {
+        requests.push(String(input)); return Response.json({ assets: [{ name: 'ComfyUI_windows_portable_nvidia.7z', size: 128, digest: 'sha256:' + 'a'.repeat(64), browser_download_url: url }] });
+    }) as typeof fetch });
+    t.after(async () => { await service.dispose(); assert.ok(path.basename(root).startsWith('luckyx-network-service-')); await fs.rm(root, { recursive: true, force: true }); });
+    const plan = await service.invoke('bootstrap.plan', { rootPath: path.join(root, 'install'), profile: 'environment' }) as any;
+    assert.ok(requests.some(value => value.startsWith('https://api.github.com/')));
+    assert.equal(plan.files[0].sizeBytes, 128); assert.equal(plan.files[0].url, url);
+    assert.equal((await service.invoke('bootstrap.status') as any).status, 'idle');
+});
+
 async function fixture(t: any) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'luckyx-bootstrap-service-'));
     const dataDir = path.join(root, 'data'), installRoot = path.join(root, 'installed'), old = path.join(root, 'old');

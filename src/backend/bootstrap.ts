@@ -7,6 +7,18 @@ import { recommendH3Installation, h3TierDefaults, h3TierLaunchArgs, H3_LITE_NODE
 import { getPinnedH3Files, isPinnedCommunityDownload } from './h3-downloads';
 const GiB = 1024 ** 3;
 const tutorialUrl = 'https://docs.comfy.org/installation/manual_install';
+const downloadAttempts = 4;
+class DownloadConnectionError extends Error {
+    constructor(message: string, readonly retryAfterMs = 0) { super(message); }
+}
+function retryPause(delayMs: number, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+        const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, delayMs);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+}
 const pinnedEnvironment: BootstrapFile = { id: 'comfyui-portable', name: 'ComfyUI_windows_portable_nvidia.7z', kind: 'environment', relativePath: 'portable.7z', url: 'https://github.com/Comfy-Org/ComfyUI/releases/download/v0.39.0/ComfyUI_windows_portable_nvidia.7z', sizeBytes: 2003629308, sha256: '3dca347842ed1c6c833105fafb1669284685a3e54df41578d5f94bcc898ae039' };
 export interface BootstrapRunResult {
     stdout: string;
@@ -278,7 +290,9 @@ export function createBootstrapManager(options: BootstrapOptions) {
     async function requestFile(url: string, init: RequestInit): Promise<Response> {
         for (let redirect = 0; redirect < 6; redirect++) {
             assertOfficialDownloadUrl(url);
-            const response = await fetcher(url, { ...init, redirect: 'manual' });
+            let response: Response;
+            try { response = await fetcher(url, { ...init, redirect: 'manual' }); }
+            catch { throw new DownloadConnectionError('连接下载来源失败'); }
             if ([301, 302, 303, 307, 308].includes(response.status)) {
                 const location = response.headers.get('location');
                 if (!location)
@@ -301,64 +315,100 @@ export function createBootstrapManager(options: BootstrapOptions) {
             throw new Error('已有下载文件完整性不符，请在管理安装目录中检查该文件：' + file.name);
         const partial = destination + '.part';
         await fs.mkdir(path.dirname(destination), { recursive: true });
-        let offset = 0;
-        if (await exists(partial)) {
-            const stat = await noLinks(partial);
-            offset = stat.size;
-            if (offset > file.sizeBytes) {
-                await fs.truncate(partial, 0);
-                offset = 0;
-            }
-        }
-        if (offset < file.sizeBytes) {
-            const response = await requestFile(file.url, { headers: offset ? { Range: `bytes=${offset}-` } : {}, signal });
-            if (!response.ok || !response.body)
-                throw new Error('下载失败，请检查网络后重试：' + file.name);
-            if (offset && response.status === 206) {
-                const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
-                if (!match || Number(match[1]) !== offset || Number(match[3]) !== file.sizeBytes)
-                    throw new Error('断点响应无效，请稍后重试');
-            }
-            else if (offset) {
-                offset = 0;
-            }
-            const handle = await fs.open(partial, offset ? 'a' : 'w');
-            const reader = response.body.getReader();
-            const onAbort = () => { void reader.cancel().catch(() => { }); };
-            signal.addEventListener('abort', onAbort, { once: true });
-            publish({ status: 'downloading', phase: file.kind === 'environment' ? '下载运行环境' : '下载 H3 模型', message: '正在下载 ' + file.name, receivedBytes: state.receivedBytes + offset });
-            try {
-                while (true) {
-                    signal.throwIfAborted();
-                    const result = await reader.read();
-                    if (result.done)
-                        break;
-                    if (offset + result.value.length > file.sizeBytes)
-                        throw new Error('下载文件大小超出官方清单');
-                    let written = 0;
-                    while (written < result.value.length) {
-                        const resultWrite = await handle.write(result.value.subarray(written));
-                        if (resultWrite.bytesWritten <= 0)
-                            throw new Error('磁盘写入失败，请检查剩余空间');
-                        written += resultWrite.bytesWritten;
-                    }
-                    ;
-                    offset += result.value.length;
-                    publish({ receivedBytes: state.receivedBytes + result.value.length });
-                }
-            }
-            finally {
-                signal.removeEventListener('abort', onAbort);
-                await handle.close();
-                await reader.cancel().catch(() => { });
-            }
+        // A retry reuses only bytes actually written to this owned partial. The base
+        // belongs to previous files, so resumed bytes can never be counted twice.
+        const receivedBeforeFile = state.receivedBytes;
+        const source = new URL(file.url).hostname === 'huggingface.co' ? 'Hugging Face' : 'GitHub';
+        const downloadPhase = file.kind === 'environment' ? '下载运行环境' : file.kind === 'node' ? '下载 H3 节点' : '下载 H3 模型';
+        for (let attempt = 1; attempt <= downloadAttempts; attempt++) {
             signal.throwIfAborted();
+            let offset = 0;
+            if (await exists(partial)) {
+                const stat = await noLinks(partial);
+                if (!stat.isFile()) throw new Error('下载暂存路径不是文件：' + file.name);
+                offset = stat.size;
+                if (offset > file.sizeBytes) { await fs.truncate(partial, 0); offset = 0; }
+            }
+            publish({ receivedBytes: receivedBeforeFile + offset });
+            if (offset === file.sizeBytes) break;
+            // Bound connection/header wait and idle reads, but never impose a total
+            // timeout on multi-gigabyte downloads. Every retry gets fresh CDN links.
+            const attemptController = new AbortController();
+            const attemptSignal = AbortSignal.any([signal, attemptController.signal]);
+            let timeout = setTimeout(() => attemptController.abort(), 30000);
+            let response: Response | undefined;
+            try {
+                publish({ status: 'downloading', phase: downloadPhase, message: '正在连接 ' + source + '：' + file.name });
+                response = await requestFile(file.url, { headers: { 'Accept-Encoding': 'identity', ...(offset ? { Range: `bytes=${offset}-` } : {}) }, signal: attemptSignal });
+                clearTimeout(timeout);
+                if ([408, 429, 500, 502, 503, 504].includes(response.status)) {
+                    const retryAfter = response.headers.get('retry-after') ?? '';
+                    const seconds = /^\d+$/.test(retryAfter) ? Number(retryAfter) : Math.max(0, (Date.parse(retryAfter) - Date.now()) / 1000);
+                    throw new DownloadConnectionError(`下载来源暂时不可用（HTTP ${response.status}）`, Math.min(10000, Number.isFinite(seconds) ? seconds * 1000 : 0));
+                }
+                if (!response.ok || !response.body) throw new Error(`无法从 ${source} 下载 ${file.name}（HTTP ${response.status}）。请检查网络或系统代理后继续安装，已下载文件会保留`);
+                if (response.status !== 200 && response.status !== 206) throw new Error('下载响应无效，已保留原片段：' + file.name);
+                let expectedEnd = file.sizeBytes - 1;
+                if (response.status === 206) {
+                    const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
+                    if (!match || Number(match[1]) !== offset || Number(match[3]) !== file.sizeBytes || Number(match[2]) < offset || Number(match[2]) >= file.sizeBytes) throw new Error('断点响应无效，请稍后重试');
+                    expectedEnd = Number(match[2]);
+                } else offset = 0; // The source ignored Range; replace only this partial.
+                const contentLength = response.headers.get('content-length');
+                if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) !== expectedEnd + 1 - offset)) throw new Error('下载响应文件大小与清单不符，已保留原片段：' + file.name);
+                const handle = await fs.open(partial, offset ? 'a' : 'w');
+                const reader = response.body.getReader();
+                const onAbort = () => { void reader.cancel().catch(() => {}); };
+                attemptSignal.addEventListener('abort', onAbort, { once: true });
+                publish({ status: 'downloading', phase: downloadPhase, message: '正在下载 ' + file.name, receivedBytes: receivedBeforeFile + offset });
+                try {
+                    while (true) {
+                        signal.throwIfAborted();
+                        timeout = setTimeout(() => attemptController.abort(), 60000);
+                        let result: ReadableStreamReadResult<Uint8Array>;
+                        try { result = await reader.read(); }
+                        catch { throw new DownloadConnectionError('下载连接中断'); }
+                        finally { clearTimeout(timeout); }
+                        signal.throwIfAborted();
+                        if (attemptSignal.aborted) throw new DownloadConnectionError('下载连接超时');
+                        if (result.done) break;
+                        if (offset + result.value.length > expectedEnd + 1) throw new Error('下载文件大小超出官方清单');
+                        let written = 0;
+                        while (written < result.value.length) {
+                            signal.throwIfAborted();
+                            const resultWrite = await handle.write(result.value.subarray(written));
+                            if (resultWrite.bytesWritten <= 0) throw new Error('磁盘写入失败，请检查剩余空间');
+                            written += resultWrite.bytesWritten;
+                        }
+                        offset += result.value.length;
+                        publish({ receivedBytes: receivedBeforeFile + offset });
+                    }
+                } finally {
+                    attemptSignal.removeEventListener('abort', onAbort);
+                    await handle.close();
+                    await reader.cancel().catch(() => {});
+                }
+                signal.throwIfAborted();
+                if (offset < file.sizeBytes) throw new DownloadConnectionError('下载未传输完整');
+                break;
+            } catch (error) {
+                signal.throwIfAborted();
+                if (!(error instanceof DownloadConnectionError)) throw error;
+                if (attempt === downloadAttempts) throw new Error(`暂时无法从 ${source} 完成下载：${file.name}。已自动重试 ${downloadAttempts - 1} 次，下载进度已保留；请检查网络或系统代理后继续安装`);
+                if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {});
+                clearTimeout(timeout);
+                publish({ status: 'downloading', phase: '连接中断，自动重试', message: `${source} 连接中断，已保留进度；准备第 ${attempt} / ${downloadAttempts - 1} 次重试` });
+                await retryPause(Math.max(1000 * 2 ** (attempt - 1), error.retryAfterMs), signal);
+            } finally {
+                clearTimeout(timeout);
+                if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {});
+                attemptController.abort();
+            }
         }
-        else
-            publish({ receivedBytes: state.receivedBytes + offset });
         publish({ status: 'verifying', phase: 'SHA256 完整性校验', message: '正在校验 ' + file.name });
         if (!await matches(partial, file, signal)) {
             await fs.truncate(partial, 0);
+            publish({ receivedBytes: receivedBeforeFile });
             throw new Error('SHA256 或文件大小校验失败，保留其他下载，下次重试此文件');
         }
         await fs.rename(partial, destination);
