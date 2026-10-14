@@ -21,7 +21,11 @@ const EDITOR_BRIDGE_SOURCE = String.raw`async function (encoded, format, action,
   while (Date.now() < deadline) {
     const candidate = window.comfyAPI?.app?.app ?? importedApp
     const method = action === 'save' ? candidate?.graph?.serialize : format === 'ui' ? candidate?.loadGraphData : candidate?.loadApiJson
-    if (candidate?.graph && typeof method === 'function') {
+    // The graph is created before async node registration and extension setup.
+    // New frontends assign positionConversion only at the end of setup().
+    const setupReady = candidate?.canvas && (!('positionConversion' in candidate) || candidate.positionConversion)
+      && candidate.extensionManager?.spinner !== true
+    if (candidate?.graph && setupReady && typeof method === 'function') {
       comfyApp = candidate
       break
     }
@@ -54,10 +58,21 @@ const EDITOR_BRIDGE_SOURCE = String.raw`async function (encoded, format, action,
   // Loading and saving do not invoke queuePrompt or any execution endpoint.
   // Native workflow registration requires a filename. In recent frontends an
   // undefined API filename is treated as a workflow object and crashes on .path.
-  const loaded = format === 'ui'
-    ? await wait(Promise.resolve(comfyApp.loadGraphData(graph, true, true, fileName)))
-    : await wait(Promise.resolve(comfyApp.loadApiJson(graph, fileName)))
-  if (loaded === false) throw new Error('原生编辑器无法载入此工作流，请检查节点与前端版本。')
+  let reportedError = ''
+  const originalReport = comfyApp.reportGraphLoadFailure
+  const report = async function (error) {
+    reportedError = typeof error?.message === 'string' ? error.message.slice(0, 500) : ''
+    return await originalReport.call(this, error)
+  }
+  if (typeof originalReport === 'function') comfyApp.reportGraphLoadFailure = report
+  try {
+    const loaded = format === 'ui'
+      ? await wait(Promise.resolve(comfyApp.loadGraphData(graph, true, true, fileName)))
+      : await wait(Promise.resolve(comfyApp.loadApiJson(graph, fileName)))
+    if (loaded === false) throw new Error('原生编辑器无法载入此工作流。' + (reportedError ? '原因：' + reportedError : '请检查节点与前端版本。'))
+  } finally {
+    if (comfyApp.reportGraphLoadFailure === report) comfyApp.reportGraphLoadFailure = originalReport
+  }
   return { loaded: true, format }
 }`
 

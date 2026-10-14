@@ -9,7 +9,7 @@ const ui={version:0.4,nodes:[{id:1,type:'Text',widgets_values:['中文提示词'
 const api={'1':{class_type:'Text',inputs:{text:'中文提示词'}}};
 test('桥接将UI与API图交给正确加载方法，不排队或执行生成',async()=>{
  for(const [format,graph] of [['ui',ui],['api',api]] as const){
-  const calls:{method:string;graph:any}[]=[];let queues=0;const app={graph:{},loadGraphData:async(value:any)=>{calls.push({method:'ui',graph:value});},loadApiJson:async(value:any)=>{calls.push({method:'api',graph:value});},queuePrompt:()=>{queues++;throw new Error('加载不能执行生成')}};
+  const calls:{method:string;graph:any}[]=[];let queues=0;const app={canvas:{},graph:{},loadGraphData:async(value:any)=>{calls.push({method:'ui',graph:value});},loadApiJson:async(value:any)=>{calls.push({method:'api',graph:value});},queuePrompt:()=>{queues++;throw new Error('加载不能执行生成')}};
   const result=await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(app));assert.equal(result.loaded,true);assert.equal(result.format,format);assert.equal(calls.length,1);assert.equal(calls[0].method,format);assert.deepEqual(calls[0].graph,graph);assert.equal(queues,0);
  }
 });
@@ -19,7 +19,7 @@ test('原生加载带文件名登记工作流，兼容新版前端的path读取�
   // Mirrors the native registration branch: undefined is taken as a workflow
   // object, while a filename string creates a temporary workflow with a path.
   const register=(filename:any)=>{const workflow=typeof filename==='string'?{path:filename}:filename;registered=workflow.path;};
-  const app={graph:{},loadGraphData:async(value:any,clear:any,restore:any,filename:any)=>{register(filename);loaded=value;uiFlags=[clear,restore];},loadApiJson:async(value:any,filename:any)=>{register(filename);loaded=value;},queuePrompt:()=>{queues++;}};
+  const app={canvas:{},graph:{},loadGraphData:async(value:any,clear:any,restore:any,filename:any)=>{register(filename);loaded=value;uiFlags=[clear,restore];},loadApiJson:async(value:any,filename:any)=>{register(filename);loaded=value;},queuePrompt:()=>{queues++;}};
   const context:any=sandbox(app);
   const filename='我的流程 </script>"; globalThis.__filenameInjected=true; //';
   const result=await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50,filename),context);
@@ -30,19 +30,19 @@ test('原生加载带文件名登记工作流，兼容新版前端的path读取�
 });
 test('UTF8提示词与脚本形文本按数据加载，不注入编辑器运行环境',async()=>{
  const graph={version:0.4,nodes:[{id:1,type:'Text',widgets_values:['中文😀 </script>"; globalThis.__injected = true; //\n` ${process.env.SECRET}']}],links:[]};let loaded:any;
- const context:any=sandbox({graph:{},loadGraphData:async(value:any)=>{loaded=value;}});await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),'ui',50),context);
+ const context:any=sandbox({canvas:{},graph:{},loadGraphData:async(value:any)=>{loaded=value;}});await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),'ui',50),context);
  assert.deepEqual(loaded,graph);assert.equal(context.__injected,undefined);
 });
 test('保存仅serialize当前画布，保留编辑结果而不生成任务',async()=>{
  let calls=0;let queues=0;const graph={...ui,nodes:[{id:1,type:'Text',widgets_values:['修改后的提示词']}]};
- const result=await runInNewContext(buildEditorSaveScript(50),sandbox({graph:{serialize:()=>{calls++;return graph;}},queuePrompt:()=>{queues++;}}));assert.equal(typeof result,'string');assert.deepEqual(JSON.parse(result),graph);assert.equal(calls,1);assert.equal(queues,0);
+ const result=await runInNewContext(buildEditorSaveScript(50),sandbox({canvas:{},graph:{serialize:()=>{calls++;return graph;}},queuePrompt:()=>{queues++;}}));assert.equal(typeof result,'string');assert.deepEqual(JSON.parse(result),graph);assert.equal(calls,1);assert.equal(queues,0);
 });
 test('编辑器未就绪时超时返回明确错误，超大图不能写入桥接',async()=>{
  await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(ui),'ui',20),sandbox())),Error);
  await assert.rejects(Promise.resolve(runInNewContext(buildEditorSaveScript(20),sandbox())),Error);
  assert.throws(()=>buildEditorLoadScript(' '.repeat(5*1024*1024+1),'ui'),Error);
  const large={version:0.4,nodes:[],links:[],extra:{text:'图'.repeat(2*1024*1024)}};
- await assert.rejects(Promise.resolve(runInNewContext(buildEditorSaveScript(50),sandbox({graph:{serialize:()=>large}}))),Error);
+ await assert.rejects(Promise.resolve(runInNewContext(buildEditorSaveScript(50),sandbox({canvas:{},graph:{serialize:()=>large}}))),Error);
 });
 test('原生编辑器仅允许既定本机HTTP来源，拒绝跨端口、外域和无协议地址',()=>{
  const engine='http://127.0.0.1:8188';for(const url of [engine+'/',engine+'/workflow?name=中文#node'])assert.equal(isAllowedEditorNavigation(url,engine),true);
@@ -61,14 +61,53 @@ test('格式记录和图结构不一致或等待预算无效时拒绝生成桥�
  for(const timeout of [0,-1,0.5,30001,NaN]){assert.throws(()=>buildEditorLoadScript(JSON.stringify(ui),'ui',timeout),/等待时间无效/);assert.throws(()=>buildEditorSaveScript(timeout),/等待时间无效/);}
 });
 test('加载或serialize卡住时仍按等待预算退出，不无限阻塞',async()=>{
- const app={graph:{serialize:()=>new Promise(()=>{})},loadGraphData:()=>new Promise(()=>{})};
+ const app={canvas:{},graph:{serialize:()=>new Promise(()=>{})},loadGraphData:()=>new Promise(()=>{})};
  await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(ui),'ui',20),sandbox(app))),/编辑器未就绪/);
  await assert.rejects(Promise.resolve(runInNewContext(buildEditorSaveScript(20),sandbox(app))),/编辑器未就绪/);
 });
 test('UI或API加载器明确返回false时拒绝成功响应，旧版undefined返回仍兼容',async()=>{
  for(const [format,graph] of [['ui',ui],['api',api]] as const){
-  const rejected={graph:{},loadGraphData:async()=>false,loadApiJson:async()=>false};await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(rejected))),Error);
-  const compatible={graph:{},loadGraphData:async()=>undefined,loadApiJson:async()=>undefined};assert.equal((await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(compatible))).loaded,true);
+  const rejected={canvas:{},graph:{},loadGraphData:async()=>false,loadApiJson:async()=>false};await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(rejected))),Error);
+  const compatible={canvas:{},graph:{},loadGraphData:async()=>undefined,loadApiJson:async()=>undefined};assert.equal((await runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,50),sandbox(compatible))).loaded,true);
+ }
+});
+
+test('等待canvas、位置转换与默认画布初始化完成，且仅加载一次不生成',async()=>{
+ for(const delayed of ['canvas','positionConversion','spinner'] as const){
+  let loads=0;let queues=0;const app:any={graph:{},canvas:delayed==='canvas'?null:{},loadGraphData:async()=>{loads++;assert.ok(app.canvas);if(delayed==='positionConversion')assert.ok(app.positionConversion);if(delayed==='spinner')assert.equal(app.extensionManager.spinner,false);},queuePrompt:()=>{queues++;}};
+  if(delayed==='positionConversion')app.positionConversion=undefined;
+  if(delayed==='spinner'){app.positionConversion={};app.extensionManager={spinner:true};}
+  const loading=runInNewContext(buildEditorLoadScript(JSON.stringify(ui),'ui',500),sandbox(app));
+  assert.equal(loads,0);
+  const timer=setTimeout(()=>{if(delayed==='canvas')app.canvas={};else if(delayed==='spinner')app.extensionManager.spinner=false;else app.positionConversion={};},10);
+  try{assert.equal((await loading).loaded,true);assert.equal(loads,1);assert.equal(queues,0);}finally{clearTimeout(timer);}
+ }
+});
+
+test('canvas或新版位置转换始终未完成时不调用加载器，等待预算结束给兼容错误',async()=>{
+ for(const incomplete of [{graph:{},canvas:null},{graph:{},canvas:{},positionConversion:null},{graph:{},canvas:{},positionConversion:{},extensionManager:{spinner:true}}]){
+  let loads=0;const app={...incomplete,loadGraphData:async()=>{loads++;}};
+  await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(ui),'ui',30),sandbox(app))),/编辑器未就绪/);
+  assert.equal(loads,0);
+ }
+});
+
+test('原生加载失败保留原始原因并恢复报告方法及其this，不误报加载成功',async()=>{
+ for(const [format,graph] of [['ui',ui],['api',api]] as const){
+  const reason=new Error('Unknown node type: MiniMaxH3Video');let reports=0;let queues=0;
+  const original=function(this:any,error:Error){assert.equal(this,app);assert.equal(error,reason);reports++;};
+  const fail=async function(this:any){await this.reportGraphLoadFailure(reason);return false;};
+  const app:any={canvas:{},graph:{},reportGraphLoadFailure:original,loadGraphData:fail,loadApiJson:fail,queuePrompt:()=>{queues++;}};
+  await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(graph),format,100),sandbox(app))),/原因：Unknown node type: MiniMaxH3Video/);
+  assert.equal(app.reportGraphLoadFailure,original);assert.equal(reports,1);assert.equal(queues,0);
+ }
+});
+
+test('加载抛错或超时也恢复原报告方法，保留原生抛错',async()=>{
+ for(const behavior of ['throw','timeout'] as const){
+  const original=()=>{};const app:any={canvas:{},graph:{},reportGraphLoadFailure:original,loadGraphData:async()=>{if(behavior==='throw')throw new Error('节点扩展初始化失败');return await new Promise(()=>{});}};
+  await assert.rejects(Promise.resolve(runInNewContext(buildEditorLoadScript(JSON.stringify(ui),'ui',30),sandbox(app))),behavior==='throw'?/节点扩展初始化失败/:/编辑器未就绪/);
+  assert.equal(app.reportGraphLoadFailure,original);
  }
 });
 
@@ -78,7 +117,7 @@ function editorManagerFixture(loadError?:Error){
  class FakeWindow extends EventEmitter {
   destroyed=false;loadedGraph:any;loadedFilename:any;loadCount=0;focusCount=0;currentUrl='';options:any;webContents:any;
   constructor(options:any){super();this.options=options;instances.push(this);const events=new EventEmitter();const sessionEvents=new EventEmitter();const session:any={on:sessionEvents.on.bind(sessionEvents),clearStorageData:async()=>{},setPermissionRequestHandler:(handler:any)=>{session.permissionRequest=handler;},setPermissionCheckHandler:(handler:any)=>{session.permissionCheck=handler;},webRequest:{onBeforeRequest:(handler:any)=>{session.beforeRequest=handler;}}};
-   const app={graph:{serialize:()=>this.loadedGraph},loadGraphData:async(graph:any,_clear:any,_restore:any,filename:any)=>{this.loadedGraph=graph;this.loadedFilename=filename;this.loadCount++;},loadApiJson:async(graph:any,filename:any)=>{this.loadedGraph=graph;this.loadedFilename=filename;this.loadCount++;}};
+   const app={canvas:{},graph:{serialize:()=>this.loadedGraph},loadGraphData:async(graph:any,_clear:any,_restore:any,filename:any)=>{this.loadedGraph=graph;this.loadedFilename=filename;this.loadCount++;},loadApiJson:async(graph:any,filename:any)=>{this.loadedGraph=graph;this.loadedFilename=filename;this.loadCount++;}};
    this.webContents={session,on:events.on.bind(events),emit:events.emit.bind(events),setWindowOpenHandler:(handler:any)=>{this.webContents.popup=handler;},getURL:()=>this.currentUrl,isDestroyed:()=>this.destroyed,executeJavaScript:async(script:string)=>runInNewContext(script,sandbox(app))};
   }
   async loadURL(url:string){if(loadError)throw loadError;this.currentUrl=url;}isDestroyed(){return this.destroyed;}isMinimized(){return false;}restore(){}show(){}focus(){this.focusCount++;}destroy(){this.destroyed=true;this.emit('closed');}
