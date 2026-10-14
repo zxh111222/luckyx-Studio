@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const read=(name:string)=>readFileSync(new URL(`../${name}`,import.meta.url),'utf8');
-const source=read('build/installer.nsh');
+const source=read('build/installer.nsh')+'\n'+read('build/installer-ui.nsh');
 function block(kind:'macro'|'function',name:string){const start=kind==='macro'?`!macro ${name}`:`Function ${name}`;const end=kind==='macro'?'!macroend':'FunctionEnd';const at=source.indexOf(start);assert.ok(at>=0,`缺少${name}`);return source.slice(source.indexOf('\n',at)+1,source.indexOf(end,at)).trim();}
 const appData='C:\\Users\\test\\AppData\\Roaming';const appRoot=appData+'\\luckyx-studio';
 type Entry={directory?:boolean;reparse?:boolean};
@@ -12,7 +12,7 @@ type Entry={directory?:boolean;reparse?:boolean};
 // installation or uninstallation is performed; unsupported instructions fail closed.
 function policy(options:{updated?:boolean;silent?:boolean;checked?:boolean;rootLink?:boolean;studioLink?:boolean;cacheLink?:boolean}={}){
  const entries=new Map<string,Entry>();const put=(name:string,entry:Entry={})=>entries.set(path.win32.normalize(name).toLowerCase(),entry);
- const normalFiles=['studio\\studio.sqlite','studio\\studio.sqlite.tmp','studio\\studio.sqlite-wal','studio\\studio.sqlite-shm','Preferences','Local State','studio\\input\\original.png','studio\\output\\video.mp4','studio\\comfy-user\\workflow.json'];
+ const normalFiles=['studio\\studio.sqlite','studio\\studio.sqlite.tmp','studio\\studio.sqlite-wal','studio\\studio.sqlite-shm','studio\\close-preferences.json','studio\\close-preferences.json.tmp','studio\\bootstrap-progress.json','Preferences','Local State','studio\\input\\original.png','studio\\output\\video.mp4','studio\\comfy-user\\workflow.json','studio\\.luckyx-bootstrap\\download.part'];
  put(appRoot,{directory:true,reparse:options.rootLink});put(appRoot+'\\studio',{directory:true,reparse:options.studioLink});for(const name of normalFiles)put(appRoot+'\\'+name);
  put(appRoot+'\\Cache',{directory:true,reparse:options.cacheLink});put(appRoot+'\\Cache\\normal.tmp');put(appRoot+'\\Cache\\nested',{directory:true});put(appRoot+'\\Cache\\nested\\data.tmp');put(appRoot+'\\Cache\\outside-link',{directory:true,reparse:true});put(appRoot+'\\Cache\\outside-link\\model.safetensors');put(appRoot+'\\Cache\\file-link',{reparse:true});
  put('F:\\VideoModels\\model.safetensors');put('F:\\ComfyUI\\main.py');put('F:\\custom-userdata\\studio.sqlite');
@@ -84,7 +84,47 @@ test('实际Electron数据目录与清理命名匹配，标准升级仍带保留
 
 
 test('显式清理目标严格限制为记录文件及固定Electron缓存白名单',()=>{
- const records=new Set(['studio\\studio.sqlite','studio\\studio.sqlite.tmp','studio\\studio.sqlite-wal','studio\\studio.sqlite-shm','preferences','local state']);
+ const records=new Set(['studio\\studio.sqlite','studio\\studio.sqlite.tmp','studio\\studio.sqlite-wal','studio\\studio.sqlite-shm','studio\\close-preferences.json','studio\\close-preferences.json.tmp','studio\\bootstrap-progress.json','preferences','local state']);
  const cacheRoots=new Set(['cache','code cache','gpucache','dawncache','dawnwebgpucache','session storage','local storage','indexeddb','blob_storage','network','partitions']);
  for(const effect of policy({checked:true}).effects){const relative=effect.path.slice(appRoot.length+1).toLowerCase();assert.ok(records.has(relative)||cacheRoots.has(relative.split('\\')[0]),`超出清理白名单：${effect.path}`);}
+});
+
+test('新增关闭偏好与安装进度元数据按选择清理，模型下载缓存仍保留',()=>{
+ const result=policy({checked:true});
+ for(const name of ['close-preferences.json','close-preferences.json.tmp','bootstrap-progress.json'])assert.ok(result.effects.some(effect=>effect.path===appRoot+'\\studio\\'+name));
+ assert.ok(result.entries.has((appRoot+'\\studio\\.luckyx-bootstrap\\download.part').toLowerCase()));
+ for(const options of [{},{updated:true,checked:true},{silent:true,checked:true}]){
+  const kept=policy(options);for(const name of ['close-preferences.json','bootstrap-progress.json'])assert.ok(kept.entries.has((appRoot+'\\studio\\'+name).toLowerCase()));
+ }
+});
+
+test('向导采用实际自定义单栏页，不插入旧 MUI 侧栏欢迎与完成页',()=>{
+ assert.match(block('macro','customWelcomePage'),/Page custom LuckyxWelcomePage/);
+ assert.match(block('macro','customFinishPage'),/Page custom LuckyxFinishPage LuckyxFinishLeave/);
+ assert.match(block('macro','customUnWelcomePage'),/UninstPage custom un\.LuckyxDataPage un\.LuckyxDataLeave/);
+ assert.match(block('macro','MUI_UNPAGE_FINISH'),/UninstPage custom un\.LuckyxFinishPage/);
+ assert.doesNotMatch(source,/!insertmacro MUI_(?:UN)?PAGE_(?:WELCOME|FINISH)/);
+ const nsis=JSON.parse(read('package.json')).build.nsis;
+ for(const name of ['installerHeader','installerSidebar','uninstallerSidebar'])assert.equal(nsis[name],undefined);
+});
+
+test('新目录页保留升级跳页与标准路径处理，拒绝空路径和相对路径',()=>{
+ assert.match(block('macro','MUI_PAGE_DIRECTORY'),/LUCKYX_DIRECTORY_PRE/);
+ assert.match(block('function','LuckyxDirectoryPage'),/Call "\$\{LUCKYX_DIRECTORY_PRE\}"/);
+ const leave=block('function','LuckyxDirectoryLeave');assert.match(leave,/\$INSTDIR == ""/);assert.match(leave,/PathIsRelativeW/);assert.match(leave,/Abort/);
+ const standard=read('node_modules/app-builder-lib/templates/nsis/assistedInstaller.nsh');assert.match(standard,/MUI_PAGE_CUSTOMFUNCTION_PRE instFilesPre/);assert.match(standard,/StrCpy \$INSTDIR "\$INSTDIR\\\$\{APP_FILENAME\}"/);
+});
+
+test('完成页按真实结果处理启动选项，进度由 NSIS 原引擎驱动',()=>{
+ const finish=block('function','LuckyxFinishPage');assert.match(finish,/IfAbort luckyx_install_failed/);assert.match(finish,/StrCpy \$LuckyxLaunchCheckbox ""/);
+ const leave=block('function','LuckyxFinishLeave');assert.match(leave,/\$LuckyxLaunchState == \$\{BST_CHECKED\}/);assert.match(leave,/StdUtils\.ExecShellAsUser/);assert.match(leave,/--updated/);
+ assert.match(source,/MUI_PAGEDECLARATION_INSTFILES/);assert.match(source,/LuckyxProgressShow/);
+ assert.doesNotMatch(source,/(?:NSD_CreateTimer|PBM_SETPOS|SendMessage[^\r\n]*0x402)/);
+ const bitmap=readFileSync(new URL('../build/installer-logo.bmp',import.meta.url));assert.equal(bitmap.toString('ascii',0,2),'BM');assert.equal(bitmap.readInt32LE(18),256);assert.equal(bitmap.readInt32LE(22),256);assert.equal(bitmap.readUInt16LE(28),24);
+ const preview=read('build/installer-ui-preview.html');assert.match(preview,/非原生截图/);assert.match(preview,/不执行安装或卸载/);assert.equal((preview.match(/data-page="/g)??[]).length,7);
+});
+
+test('安装品牌图按 DPI 缩放到固定控件范围，高像素源不挤压相邻标题',()=>{
+ const brand=block('macro','LuckyxBrand');assert.match(brand,/NSD_CreateBitmap\} 0u 0u 24u 24u/);assert.match(brand,/NSD_SetStretchedImage\}/);assert.doesNotMatch(brand,/NSD_SetImage\}/);assert.match(brand,/NSD_CreateLabel\} 33u 3u/);
+ const preparation=read('scripts/prepare-installer-brand.mjs');assert.match(preparation,/assets\/brand\/png\/app-256\.png/);
 });

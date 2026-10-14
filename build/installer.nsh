@@ -14,12 +14,7 @@
   Goto `${_f}`
 !macroend
 
-!macro customWelcomePage
-  !insertmacro skipPageIfUpdated
-  !define MUI_WELCOMEPAGE_TITLE "欢迎使用 luckyx. Studio"
-  !define MUI_WELCOMEPAGE_TEXT "更简单的本地视频创作。$\r$\n$\r$\n安装启动器，连接已有 ComfyUI 环境。模型保留在原目录，无需重复下载。$\r$\n$\r$\n升级会保留你的设置、任务记录和工作流。"
-  !insertmacro MUI_PAGE_WELCOME
-!macroend
+!include "installer-ui.nsh"
 
 !ifdef BUILD_UNINSTALLER
   Var LuckyxDeleteData
@@ -41,6 +36,8 @@
   !macro customHeader
     !undef GetOptions
     !define GetOptions "!insertmacro LuckyxGetOptions"
+    !insertmacro LuckyxSharedUiFunctions "un."
+    !insertmacro LuckyxUninstallUiFunctions
     !insertmacro LuckyxUninstallFunctions
   !macroend
 
@@ -48,42 +45,8 @@
     StrCpy $LuckyxDeleteData ${BST_UNCHECKED}
   !macroend
 
-  !macro customUnWelcomePage
-    !define MUI_UNWELCOMEPAGE_TITLE "卸载 luckyx. Studio"
-    !define MUI_UNWELCOMEPAGE_TEXT "卸载启动器，保留你的创作。$\r$\n$\r$\n默认保留设置、历史记录和工作流副本，重新安装后可继续使用。$\r$\n$\r$\n下一页可选择清理本应用记录与缓存。视频、原图、模型和 ComfyUI 环境不会被清理。"
-    !insertmacro MUI_UNPAGE_WELCOME
-    UninstPage custom un.LuckyxDataPage un.LuckyxDataLeave
-  !macroend
-
   ; Generate functions only in customHeader, after builder plugin directories are registered.
   !macro LuckyxUninstallFunctions
-  Function un.LuckyxDataPage
-    ${If} ${isUpdated}
-      Abort
-    ${EndIf}
-    ${If} ${Silent}
-      Abort
-    ${EndIf}
-    !insertmacro MUI_HEADER_TEXT "保留或清理应用数据" "默认保留，下次安装可以继续使用。"
-    nsDialogs::Create 1018
-    Pop $LuckyxDataDialog
-    ${If} $LuckyxDataDialog == error
-      Abort
-    ${EndIf}
-    ${NSD_CreateLabel} 0 4u 100% 34u "卸载只移除启动器。外部模型、ComfyUI、生成视频和原图都会保留。"
-    Pop $0
-    ${NSD_CreateCheckbox} 0 48u 100% 28u "删除本应用的设置、历史记录、工作流副本及缓存"
-    Pop $LuckyxDeleteCheckbox
-    ${NSD_SetState} $LuckyxDeleteCheckbox ${BST_UNCHECKED}
-    ${NSD_CreateLabel} 0 92u 100% 48u "此项默认不选。勾选后，本应用记录无法恢复。$\r$\n保留视频、原图和已有模型；不会跟随外部目录链接。"
-    Pop $0
-    nsDialogs::Show
-  FunctionEnd
-
-  Function un.LuckyxDataLeave
-    ${NSD_GetState} $LuckyxDeleteCheckbox $LuckyxDeleteData
-  FunctionEnd
-
   ; Called ONLY for the fixed cache subdirectories listed below. Skip every reparse point.
   ; Never use RMDir /r: directory junctions must not lead cleanup outside the app cache.
   Function un.LuckyxRemoveCacheTree
@@ -155,6 +118,9 @@
           Delete "$APPDATA\luckyx-studio\studio\studio.sqlite.tmp"
           Delete "$APPDATA\luckyx-studio\studio\studio.sqlite-wal"
           Delete "$APPDATA\luckyx-studio\studio\studio.sqlite-shm"
+          Delete "$APPDATA\luckyx-studio\studio\close-preferences.json"
+          Delete "$APPDATA\luckyx-studio\studio\close-preferences.json.tmp"
+          Delete "$APPDATA\luckyx-studio\studio\bootstrap-progress.json"
         ${EndIf}
         Delete "$APPDATA\luckyx-studio\Preferences"
         Delete "$APPDATA\luckyx-studio\Local State"

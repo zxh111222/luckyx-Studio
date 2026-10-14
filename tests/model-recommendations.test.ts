@@ -54,8 +54,9 @@ test('面向用户的静态文案描述产品能力，不引用开发者本机�
   for(const text of [model.description,model.sourceNote,model.initial.note])assert.doesNotMatch(text,/本机尚未|本地历史|MP4\s*已存在|已有成功记录|本机已生成/);
  }
 });
-test('四个模型教程均有可完整解码的本地JPEG截图',async()=>{
- for(const model of modelRecommendations){
+test('官方与8GB社区方案均有可完整解码的本地JPEG教程截图',async()=>{
+ const guides=[...modelRecommendations,rankModelRecommendations(8192,16,'NVIDIA RTX 4060').find(model=>model.id==='minimax-h3-existing')!];
+ for(const model of guides){
   const file=new URL(`../src/renderer/public${model.screenshotPath}`,import.meta.url);const stat=await fs.stat(file);assert.ok(stat.size>0&&stat.size<=200*1024,`${model.id} 教程截图体积超限`);
   const bytes=await fs.readFile(file);const image=sharp(bytes);const metadata=await image.metadata();assert.equal(metadata.format,'jpeg');assert.ok(metadata.width!>=800&&metadata.height!>=600);await image.raw().toBuffer();
  }
