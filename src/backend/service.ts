@@ -15,6 +15,7 @@ import { videoRecipeDefinitions, MODEL_LOADER_FIELDS } from '../shared/video-rec
 import { getEngineInstallation } from './engine-installation';
 import { createBootstrapManager } from './bootstrap';
 import type { BootstrapPlan } from '../shared/bootstrap';
+import { canRemoveTask } from '../shared/task-policy';
 const MODEL_SPECS = [['diffusion_models', 'minimax_h3_fl2va_pruned_int8_convrot.safetensors'], ['text_encoders', 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'], ['vae', 'minimax_h3_video_vae_int8_convrot.safetensors'], ['vae', 'minimax_h3_audio_vae_fp32.safetensors'], ['loras', 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors']];
 const activeStatuses = ['submitting', 'queued', 'running', 'unknown'];
 export async function createStudioService(options: {
@@ -634,6 +635,23 @@ export async function createStudioService(options: {
                     }
                 }
                 case 'task.cancel': return cancel((payload as any)?.id);
+                case 'task.remove': {
+                    const id = (payload as any)?.id;
+                    if (typeof id !== 'string' || !id.trim())
+                        throw new Error('请选择要删除的历史任务');
+                    const task = snapshot.tasks.find(t => t.id === id);
+                    if (!task)
+                        throw new Error('任务不存在或已删除');
+                    if (!canRemoveTask(task.status))
+                        throw new Error('只能删除已完成、失败或已中断的任务；运行状态待确认的任务请先刷新');
+                    // Refresh only updates existing active records; it never imports arbitrary
+                    // engine history. Removing the record also removes its output references.
+                    // The engine history and the user's media / workflow files stay untouched.
+                    snapshot.tasks = snapshot.tasks.filter(t => t.id !== id);
+                    await persist();
+                    emit();
+                    return { id };
+                }
                 case 'task.retry': {
                     const key = 'retry:' + String((payload as any)?.id);
                     const existing = inflightSubmissions.get(key);

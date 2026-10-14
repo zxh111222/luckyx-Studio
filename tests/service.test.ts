@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createStudioService } from '../src/backend/service';
 import graph from '../src/backend/workflows/h3-i2v.json';
 import type { Snapshot, TaskRecord, GenerationParams, StudioService } from '../src/shared/contracts';
+import { canRemoveTask } from '../src/shared/task-policy';
 const base:GenerationParams={templateId:'h3-i2v',prompt:'测试镜头',width:864,height:480,frames:124,steps:4,seed:123,image:{name:'first.png',dataBase64:Buffer.from([137,80,78,71,13,10,26,10,0]).toString('base64')}};
 async function until(predicate:()=>Promise<boolean>){for(let i=0;i<100;i++){if(await predicate())return;await delay(50);}throw new Error('等待模拟服务状态超时');}
 async function fixture(t:any){
@@ -134,4 +135,32 @@ test('首次安装接口需有效计划，不改动已有设置与作品',async 
  await assert.rejects(f.service.invoke('bootstrap.plan',{rootPath:f.dir,profile:'arbitrary'}),/安装目录和安装内容/);
  await assert.rejects(f.service.invoke('bootstrap.plan',{rootPath:'relative',profile:'environment'}),/绝对安装目录/);
  const after=await f.service.invoke('snapshot') as Snapshot;assert.deepEqual(after.settings,before.settings);assert.deepEqual(after.tasks,before.tasks);assert.equal(f.state.calls.filter(c=>c.url==='/prompt').length,0);
+});
+
+test('历史删除持久化且刷新与重启不回流，保留视频、素材、工作流和引擎历史',async t=>{
+ const f=await fixture(t);const task=await f.service.invoke('task.submit',base) as TaskRecord;
+ f.state.pending=[];f.state.history[task.promptId!]={status:{completed:true,status_str:'success',messages:[]},outputs:{15:{images:[{filename:'keep.mp4',subfolder:'',type:'output'}]}}};
+ await f.service.invoke('tasks.refresh');assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks[0].status,'completed');
+ const snapshot=await f.service.invoke('snapshot') as Snapshot;const video=path.join(snapshot.settings.outputPath,'keep.mp4');const image=path.join(snapshot.settings.inputPath,'keep.png');
+ await fs.mkdir(snapshot.settings.outputPath,{recursive:true});await fs.mkdir(snapshot.settings.inputPath,{recursive:true});await fs.writeFile(video,'original-video');await fs.writeFile(image,'original-image');
+ const workflow=await f.service.invoke('workflow.create',{name:'保留工作流'}) as {id:string};
+ const calls=f.state.calls.length;let emitted:Snapshot|undefined;const unsubscribe=f.service.subscribe(s=>{emitted=s;});
+ assert.deepEqual(await f.service.invoke('task.remove',{id:task.id}),{id:task.id});assert.equal(emitted!.tasks.length,0);unsubscribe();
+ assert.equal(f.state.calls.length,calls,'删除不能调用引擎或移除它的历史');assert.ok(f.state.history[task.promptId!]);
+ await assert.rejects(f.service.resolveMedia(task.id,0),/不存在/);await assert.rejects(f.service.invoke('task.remove',{id:task.id}),/不存在或已删除/);
+ await f.service.invoke('tasks.refresh');assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks.length,0);
+ await f.service.dispose();const restored=await createStudioService({dataDir:path.join(f.dir,'data'),defaultInstallationPath:f.installationPath});f.replace(restored);await restored.invoke('tasks.refresh');
+ assert.equal((await restored.invoke('snapshot') as Snapshot).tasks.length,0);assert.equal(await fs.readFile(video,'utf8'),'original-video');assert.equal(await fs.readFile(image,'utf8'),'original-image');
+ assert.ok(await restored.invoke('workflow.get',{id:workflow.id}));
+});
+
+test('失败及取消历史可删除；活动或结果待确认的任务不可删除',async t=>{
+ for(const status of ['submitting','queued','running','unknown'] as const)assert.equal(canRemoveTask(status),false);
+ for(const status of ['completed','failed','interrupted'] as const)assert.equal(canRemoveTask(status),true);
+ const f=await fixture(t);await assert.rejects(f.service.invoke('task.remove'),/请选择/);await assert.rejects(f.service.invoke('task.remove',{id:123}),/请选择/);
+ const queued=await f.service.invoke('task.submit',base) as TaskRecord;await assert.rejects(f.service.invoke('task.remove',{id:queued.id}),/只能删除/);
+ f.state.pending=[];f.state.running=[[0,queued.promptId,{}]];await f.service.invoke('tasks.refresh');await assert.rejects(f.service.invoke('task.remove',{id:queued.id}),/只能删除/);
+ f.state.running=[];await f.service.invoke('tasks.refresh');assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks[0].status,'unknown');await assert.rejects(f.service.invoke('task.remove',{id:queued.id}),/只能删除/);
+ f.state.history[queued.promptId!]={status:{completed:true,status_str:'error',messages:[['execution_interrupted',{}]]},outputs:{}};await f.service.invoke('tasks.refresh');await f.service.invoke('task.remove',{id:queued.id});
+ f.state.failPrompt=true;const failed=await f.service.invoke('task.submit',base) as TaskRecord;assert.equal(failed.status,'failed');await f.service.invoke('task.remove',{id:failed.id});assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks.length,0);
 });
