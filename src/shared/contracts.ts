@@ -19,6 +19,7 @@ export interface Hardware {
     vramMb: number;
     ramGb: number;
     driver: string;
+    cudaVersion?: string;
 }
 export interface GenerationParams {
     mode?: 'image' | 'text';

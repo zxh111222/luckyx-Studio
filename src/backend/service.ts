@@ -17,6 +17,7 @@ import type { BootstrapPlan } from '../shared/bootstrap';
 import { canRemoveTask } from '../shared/task-policy';
 import { H3_STANDARD_MODELS } from '../shared/h3-installation';
 import { getH3Runtime } from './h3-runtime';
+import { parseNvidiaCudaVersion } from '../shared/cuda-runtime';
 const MODEL_SPECS = H3_STANDARD_MODELS;
 const activeStatuses = ['submitting', 'queued', 'running', 'unknown'];
 export async function createStudioService(options: {
@@ -26,6 +27,7 @@ export async function createStudioService(options: {
     outputBaseUrl?: string;
     sevenZipPath?: string;
     bootstrapFetch?: typeof globalThis.fetch;
+    hardwareProbe?: () => Promise<Snapshot['hardware']>;
     spawnEngine?: typeof spawn;
     terminateEngine?: (child: ChildProcess) => Promise<void>;
     bootstrapManager?: ReturnType<typeof createBootstrapManager>;
@@ -71,7 +73,7 @@ export async function createStudioService(options: {
     let disposed = false;
     let closing = false, shutdownFlight: Promise<void> | undefined;
     const shutdownController = new AbortController();
-    const bootstrap = options.bootstrapManager ?? createBootstrapManager({ dataDir: options.dataDir, fetch: options.bootstrapFetch, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe'), getHardware: async () => { await hardwareReady; return structuredClone(snapshot.hardware); } });
+    const bootstrap = options.bootstrapManager ?? createBootstrapManager({ dataDir: options.dataDir, fetch: options.bootstrapFetch, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe'), getHardware: async () => { await hardwareReady; await detectHardware(); return structuredClone(snapshot.hardware); } });
     let bootstrapPlan: BootstrapPlan | undefined;
     let bootstrapFlight: Promise<void> | undefined;
     let bootstrapConnectionError: string | undefined;
@@ -91,11 +93,28 @@ export async function createStudioService(options: {
             }
     };
     const log = (level: 'info' | 'warn' | 'error', message: string) => { snapshot.logs.push({ at: new Date().toISOString(), level, message }); snapshot.logs = snapshot.logs.slice(-200); emit(); };
-    const hardwareReady = promisify(execFile)('nvidia-smi', ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'], { windowsHide: true, timeout: 5000 }).then(({ stdout }) => {
-        const [gpuName, vram, driver] = stdout.trim().split('\n')[0].split(',').map(s => s.trim());
-        snapshot.hardware = { ...snapshot.hardware, gpuName, vramMb: Number(vram) || 0, driver };
-        emit();
-    }).catch(() => { snapshot.hardware.gpuName = '未检测到 NVIDIA 显卡'; emit(); });
+    let hardwareFlight: Promise<void> | undefined;
+    function detectHardware(): Promise<void> {
+        if (hardwareFlight) return hardwareFlight;
+        hardwareFlight = (async () => {
+            if (options.hardwareProbe) {
+                try { snapshot.hardware = structuredClone(await options.hardwareProbe()); }
+                catch { snapshot.hardware = { ...snapshot.hardware, gpuName: '未检测到 NVIDIA 显卡', vramMb: 0, driver: '未知', cudaVersion: undefined }; }
+                emit(); return;
+            }
+            const [query, summary] = await Promise.allSettled([
+                promisify(execFile)('nvidia-smi', ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'], { windowsHide: true, timeout: 5000 }),
+                promisify(execFile)('nvidia-smi', [], { windowsHide: true, timeout: 5000 })
+            ]);
+            if (query.status === 'fulfilled') {
+                const [gpuName, vram, driver] = query.value.stdout.trim().split('\n')[0].split(',').map(s => s.trim());
+                snapshot.hardware = { ...snapshot.hardware, gpuName, vramMb: Number(vram) || 0, driver: driver || '未知', cudaVersion: summary.status === 'fulfilled' ? parseNvidiaCudaVersion(summary.value.stdout) : undefined };
+            } else snapshot.hardware = { ...snapshot.hardware, gpuName: '未检测到 NVIDIA 显卡', vramMb: 0, driver: '未知', cudaVersion: undefined };
+            emit();
+        })().finally(() => { hardwareFlight = undefined; });
+        return hardwareFlight;
+    }
+    const hardwareReady = detectHardware();
     let writes = Promise.resolve();
     const persist = () => {
         if (disposed)
@@ -649,6 +668,7 @@ export async function createStudioService(options: {
                     if (typeof p?.rootPath !== 'string' || (p.profile !== undefined && !['environment', 'h3'].includes(String(p.profile)))) throw new Error('请选择安装目录和安装内容');
                     bootstrapPlan = undefined;
                     await hardwareReady;
+                    await detectHardware();
                     bootstrapPlan = await bootstrap.plan({ rootPath: p.rootPath, hardware: snapshot.hardware, ...{ profile: (p.profile ?? 'h3') as 'environment' | 'h3' } });
                     bootstrapConnectionError = undefined;
                     return bootstrapPlan;
@@ -766,6 +786,7 @@ export async function createStudioService(options: {
                     return preset;
                 }
                 case 'diagnostics.run':
+                    await detectHardware();
                     await refresh();
                     await validate();
                     return { engine: snapshot.engine, issues: snapshot.templates[0].issues, hardware: snapshot.hardware };

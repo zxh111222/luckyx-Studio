@@ -39,7 +39,7 @@ async function fixture(t: any) {
             const node = getPinnedH3Files('lite').find(file => file.kind === 'node' && args.some(arg => arg.endsWith(file.name)));
             if (args[0] === 'l') return { stdout: '----------\nPath = ' + (node ? node.archiveRoot + '/__init__.py' : 'ComfyUI_windows_portable/ComfyUI/main.py') };
             if (args[0] === 'x') { const extracted = args.find(arg => arg.startsWith('-o'))!.slice(2); if (node) await write(path.join(extracted, node.archiveRoot!, '__init__.py')); else { await write(path.join(extracted, 'ComfyUI_windows_portable/python_embeded/python.exe')); await write(path.join(extracted, 'ComfyUI_windows_portable/ComfyUI/main.py')); } return { stdout: '' }; }
-            return { stdout: JSON.stringify({ available: true, cuda: '13.0' }) };
+            return { stdout: JSON.stringify({ available: true, computed: true, cuda: '13.0' }) };
         } };
     const installed = createBootstrapManager(options); const plan = await installed.plan({ rootPath: installRoot, hardware: await options.getHardware() }); assert.equal((await installed.start(plan)).status, 'completed'); await installed.dispose();
     await write(path.join(old, 'python_embeded/python.exe')); await write(path.join(old, 'ComfyUI/main.py'));

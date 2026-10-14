@@ -31,7 +31,8 @@ export function h3TierLaunchArgs(tier: H3InstallationTier): string[] {
 export function recommendH3Installation(hardware: BootstrapHardware, profile: 'environment' | 'h3' = 'h3'): { recommendation: H3InstallationRecommendation; hardwareIssues: string[] } {
     const hardwareIssues: string[] = [];
     const nvidiaRtx = /RTX\s*(?:[2-9]\d{3}|A\d+)|RTX PRO/i.test(hardware.gpuName);
-    if (!nvidiaRtx) hardwareIssues.push('一键安装需要已识别的 NVIDIA RTX 20 系列或更新显卡；其他显卡请使用手动教程');
+    const legacyNvidia = /(?:GTX\s*(?:9\d{2}|10\d{2})|Quadro\s*[MP]\d+)/i.test(hardware.gpuName);
+    if (!nvidiaRtx && !(profile === 'environment' && legacyNvidia)) hardwareIssues.push('H3 自动安装需要 NVIDIA RTX 20 系列或更新显卡；支持的旧款 GTX / Quadro 可选择仅安装基础环境，其他显卡请使用手动教程');
     if (profile === 'h3' && (!Number.isFinite(hardware.vramMb) || hardware.vramMb < 7800)) hardwareIssues.push('H3 自适应安装从 8 GB 显存开始；显存不足或未检测到时可先安装基础环境');
     if (profile === 'h3' && (!Number.isFinite(hardware.ramGb) || hardware.ramGb < 16)) hardwareIssues.push('H3 条件试用至少需要 16 GB 系统内存；当前配置可先安装基础环境');
     let tier: H3InstallationTier = 'environment';
@@ -43,6 +44,5 @@ export function recommendH3Installation(hardware: BootstrapHardware, profile: 'e
     const reason = tier === 'environment' ? profile === 'environment' ? '仅安装运行环境，稍后自行选择模型' : '当前硬件不符合 H3 自动安装条件' : tier === 'lite' ? '按显存和系统内存选择较小的社区权重与编码器，减少内存负担' : tier === 'balanced' ? '选择较小的官方扩散权重，保留原生音频和 32B 编码器' : '显存与系统内存较充足，使用官方 INT8 原生音视频方案';
     const warnings = tier === 'environment' ? [] : ['按硬件估算的试用配置，尚未在此电脑验证生成；速度取决于显卡、内存、驱动和可用空间'];
     if (tier === 'lite') warnings.push('社区 Lite 使用 ClipProj / Spectrum 节点，画质和提示词理解可能降低；当前方案仅生成视频，不含音频', '8 GB 显存需要 CPU 卸载，首次先用短片试跑；建议 32 GB 内存并关闭占用显存的其他应用');
-    if (tier !== 'environment' && hardware.driver !== '未知' && /^\d+(?:\.\d+)*$/.test(hardware.driver) && Number.parseInt(hardware.driver) < 580) warnings.push('CUDA 13 需要较新的 NVIDIA 驱动；安装后会检查 CUDA 兼容性，请先更新显卡驱动');
     return { recommendation: { tier, label: labels[tier], source: tier === 'lite' ? 'community' : 'official', reason, warnings, modelNames: tier === 'environment' ? [] : h3ModelSpecs(tier).map(([, name]) => name), requiredNodes: tier === 'lite' ? [...H3_LITE_NODES] : [], launchArgs: h3TierLaunchArgs(tier), defaults: h3TierDefaults(tier) }, hardwareIssues };
 }

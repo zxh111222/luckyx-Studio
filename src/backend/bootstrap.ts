@@ -5,6 +5,8 @@ import { spawn } from 'node:child_process';
 import type { BootstrapFile, BootstrapHardware, BootstrapPlan, BootstrapState } from '../shared/bootstrap';
 import { recommendH3Installation, h3TierDefaults, h3TierLaunchArgs, H3_LITE_NODES } from '../shared/h3-installation';
 import { getPinnedH3Files, isPinnedCommunityDownload } from './h3-downloads';
+import { selectCudaRuntime } from '../shared/cuda-runtime';
+import { getPinnedEnvironmentFile, environmentCachePaths, CUDA_GPU_PROBE_SCRIPT, validateGpuProbe } from './cuda-runtime';
 const GiB = 1024 ** 3;
 const tutorialUrl = 'https://docs.comfy.org/installation/manual_install';
 const downloadAttempts = 4;
@@ -19,7 +21,6 @@ function retryPause(delayMs: number, signal: AbortSignal): Promise<void> {
         signal.addEventListener('abort', onAbort, { once: true });
     });
 }
-const pinnedEnvironment: BootstrapFile = { id: 'comfyui-portable', name: 'ComfyUI_windows_portable_nvidia.7z', kind: 'environment', relativePath: 'portable.7z', url: 'https://github.com/Comfy-Org/ComfyUI/releases/download/v0.39.0/ComfyUI_windows_portable_nvidia.7z', sizeBytes: 2003629308, sha256: '3dca347842ed1c6c833105fafb1669284685a3e54df41578d5f94bcc898ae039' };
 export interface BootstrapRunResult {
     stdout: string;
 }
@@ -122,13 +123,14 @@ async function ownedResumeBytes(rootPath: string, targetPath: string, version: s
     }
     return count(cache);
 }
-async function reusablePlanBytes(rootPath: string, targetPath: string, version: string, files: BootstrapFile[]): Promise<number> {
+async function downloadedPlanBytes(rootPath: string, targetPath: string, version: string, files: BootstrapFile[]): Promise<number> {
     await ownedResumeBytes(rootPath, targetPath, version);
     const cache = path.join(rootPath, '.luckyx-bootstrap');
     if (!await exists(cache)) return 0;
+    const cachePaths = environmentCachePaths(files[0]);
     let bytes = 0;
     for (const file of files) {
-        const destination = file.kind === 'environment' ? path.join(cache, 'portable.7z') : file.kind === 'node' ? path.join(cache, 'nodes', file.name) : path.join(cache, 'unpacked/ComfyUI_windows_portable', file.relativePath);
+        const destination = file.kind === 'environment' ? path.join(cache, cachePaths.archiveName) : file.kind === 'node' ? path.join(cache, 'nodes', file.name) : path.join(cache, cachePaths.extractedName, 'ComfyUI_windows_portable', file.relativePath);
         for (const candidate of [destination, destination + '.part']) {
             if (!await exists(candidate)) continue;
             const stat = await noLinks(candidate);
@@ -136,7 +138,14 @@ async function reusablePlanBytes(rootPath: string, targetPath: string, version: 
             break;
         }
     }
-    const extracted = path.join(cache, 'unpacked');
+    return bytes;
+}
+async function reusablePlanBytes(rootPath: string, targetPath: string, version: string, files: BootstrapFile[]): Promise<number> {
+    let bytes = await downloadedPlanBytes(rootPath, targetPath, version, files);
+    const cache = path.join(rootPath, '.luckyx-bootstrap');
+    if (!await exists(cache)) return bytes;
+    const cachePaths = environmentCachePaths(files[0]);
+    const extracted = path.join(cache, cachePaths.extractedName);
     async function environmentBytes(directory: string): Promise<number> {
         let size = 0;
         for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -238,7 +247,9 @@ export function createBootstrapManager(options: BootstrapOptions) {
             if (profile !== 'environment' && profile !== 'h3')
                 throw new Error('请选择环境或 H3 完整安装');
             let { recommendation, hardwareIssues } = recommendH3Installation(input.hardware, profile);
-            const environment = structuredClone(pinnedEnvironment);
+            const { runtime, hardwareIssues: runtimeIssues } = selectCudaRuntime(input.hardware);
+            hardwareIssues = [...hardwareIssues, ...runtimeIssues];
+            const environment = getPinnedEnvironmentFile(runtime.id);
             // Query the fixed official release; digest-less responses can never change the trusted package.
             try {
                 const release = await metadata('https://api.github.com/repos/Comfy-Org/ComfyUI/releases/tags/v0.39.0');
@@ -275,8 +286,9 @@ export function createBootstrapManager(options: BootstrapOptions) {
             }
             const downloadBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
             const requiredFreeBytes = Math.max(5 * GiB, downloadBytes + environment.sizeBytes * 4 + 5 * GiB - await reusablePlanBytes(input.rootPath, targetPath, 'v0.39.0', files));
-            currentPlan = { profile, id: randomUUID(), version: 'v0.39.0', rootPath: path.resolve(input.rootPath), targetPath, files, downloadBytes, requiredFreeBytes, freeBytes, hardwareIssues, recommendation, tutorialUrl: recommendation.tier === 'lite' ? 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM' : tutorialUrl };
-            publish({ status: 'idle', message: hardwareIssues.length ? hardwareIssues.join('；') : profile === 'h3' ? recommendation.label + '：按本机配置选择，首次生成仍需试跑' : '基础环境可安装；H3 模型不会下载', totalBytes: downloadBytes, tutorialUrl: currentPlan.tutorialUrl, plan: structuredClone(currentPlan), resumable: false });
+            const cachedBytes = await downloadedPlanBytes(input.rootPath, targetPath, 'v0.39.0', files);
+            currentPlan = { profile, id: randomUUID(), version: 'v0.39.0', rootPath: path.resolve(input.rootPath), targetPath, files, downloadBytes, cachedBytes, requiredFreeBytes, freeBytes, hardwareIssues, recommendation, runtime, tutorialUrl: recommendation.tier === 'lite' ? 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM' : tutorialUrl };
+            publish({ status: 'idle', message: hardwareIssues.length ? hardwareIssues.join('；') : profile === 'h3' ? recommendation.label + '：按本机配置选择，首次生成仍需试跑' : '基础环境可安装；H3 模型不会下载', receivedBytes: cachedBytes, totalBytes: downloadBytes, tutorialUrl: currentPlan.tutorialUrl, plan: structuredClone(currentPlan), resumable: false });
             persistProgress(true);
             await writes;
             return structuredClone(currentPlan);
@@ -419,9 +431,17 @@ export function createBootstrapManager(options: BootstrapOptions) {
             throw new Error('请先重新检查安装条件');
         const trusted = structuredClone(currentPlan);
         const signal = controller!.signal;
-        publish({ status: 'verifying', receivedBytes: 0, completedFiles: 0, totalBytes: trusted.downloadBytes, error: undefined, phase: '安装前检查', message: '检查硬件和磁盘空间' });
+        publish({ status: 'verifying', receivedBytes: 0, completedFiles: 0, totalBytes: trusted.downloadBytes, error: undefined, phase: '安装前检查', currentFile: undefined, message: '检查硬件和磁盘空间' });
         try {
             const diskDirectory = await nearestExistingDirectory(trusted.rootPath);
+            if (options.getHardware) {
+                const actualHardware = await options.getHardware();
+                const actualRuntime = selectCudaRuntime(actualHardware);
+                const actualProfile = recommendH3Installation(actualHardware, trusted.profile);
+                const issues = [...actualProfile.hardwareIssues, ...actualRuntime.hardwareIssues];
+                if (issues.length) throw new Error(issues.join('；') + '；已保留下载进度，请处理后重新检查安装条件');
+                if (!trusted.runtime || actualRuntime.runtime.id !== trusted.runtime.id) throw new Error('设备或驱动配置已变化，请重新检查安装条件；已下载的模型和文件会保留');
+            }
             if (trusted.hardwareIssues.length)
                 throw new Error(trusted.hardwareIssues.join('；'));
             if (await exists(trusted.targetPath))
@@ -444,7 +464,8 @@ export function createBootstrapManager(options: BootstrapOptions) {
                 await fs.mkdir(cache);
                 await fs.writeFile(marker, JSON.stringify({ app: 'luckyx. Studio', target: trusted.targetPath, version: trusted.version }), { flag: 'wx' });
             }
-            const archive = path.join(cache, 'portable.7z'), extracted = path.join(cache, 'unpacked');
+            const cachePaths = environmentCachePaths(trusted.files[0]);
+            const archive = path.join(cache, cachePaths.archiveName), extracted = path.join(cache, cachePaths.extractedName);
             await download(trusted.files[0], archive, signal);
             publish({ status: 'extracting', phase: '解压官方运行环境', message: '下载已校验，正在安全解压' });
             const listing = await runner(options.sevenZipPath, ['l', '-slt', archive], { signal });
@@ -455,6 +476,19 @@ export function createBootstrapManager(options: BootstrapOptions) {
             await assertNoLinksTree(extracted);
             const portable = path.join(extracted, 'ComfyUI_windows_portable');
             const launch = await getPortableLaunchPlan(portable);
+            async function probeGpuRuntime(final = false) {
+                signal.throwIfAborted();
+                if (!trusted.runtime) throw new Error('安装计划缺少运行环境信息，请重新检查');
+                publish({ status: 'verifying', phase: final ? '安装后 GPU 运算复验' : '检查 Python 与 GPU 运算', currentFile: undefined, message: final ? '文件已校验，正在再次确认 Python 与显卡可执行 GPU 运算' : '先验证显卡驱动能运行实际 GPU 运算，检查通过后再继续安装模型' });
+                let probe: BootstrapRunResult;
+                try { probe = await runner(launch.python, ['-s', '-c', CUDA_GPU_PROBE_SCRIPT], { signal, cwd: portable }); }
+                catch {
+                    signal.throwIfAborted();
+                    throw new Error('Python 或 GPU 运行检查失败。已保留安装文件和模型，请检查 NVIDIA 驱动后重新检查并继续安装');
+                }
+                validateGpuProbe(probe.stdout, trusted.runtime);
+            }
+            await probeGpuRuntime();
             for (const file of trusted.files.slice(1)) {
                 signal.throwIfAborted();
                 const destination = path.join(portable, file.relativePath);
@@ -496,13 +530,9 @@ export function createBootstrapManager(options: BootstrapOptions) {
                     await noLinks(path.join(portable, segment));
                 await download(file, destination, signal);
             }
-            publish({ status: 'verifying', phase: '检查 Python 与 CUDA', message: '模型校验完成，检查 portable Python 和 GPU 依赖' });
-            const probe = await runner(launch.python, ['-s', '-c', 'import json,torch; print(json.dumps({"cuda":torch.version.cuda,"available":torch.cuda.is_available()}))'], { signal, cwd: portable });
-            const check = JSON.parse(probe.stdout.trim().split(/\r?\n/).at(-1) ?? '{}');
-            if (!check.available || !String(check.cuda).startsWith('13.'))
-                throw new Error('CUDA 13 环境检查未通过，请按官方教程检查显卡驱动');
+            await probeGpuRuntime(true);
             signal.throwIfAborted();
-            await fs.writeFile(path.join(portable, 'luckyx-managed.json'), JSON.stringify({ app: 'luckyx. Studio', version: trusted.version, installationTier: trusted.recommendation.tier, defaults: trusted.recommendation.defaults, models: trusted.files.filter(file => file.kind === 'model').map(file => ({ name: file.name, sha256: file.sha256 })), nodes: trusted.files.filter(file => file.kind === 'node').map(file => ({ name: file.name, sha256: file.sha256, url: file.url })) }));
+            await fs.writeFile(path.join(portable, 'luckyx-managed.json'), JSON.stringify({ app: 'luckyx. Studio', version: trusted.version, runtimeId: trusted.runtime!.id, installationTier: trusted.recommendation.tier, defaults: trusted.recommendation.defaults, models: trusted.files.filter(file => file.kind === 'model').map(file => ({ name: file.name, sha256: file.sha256 })), nodes: trusted.files.filter(file => file.kind === 'node').map(file => ({ name: file.name, sha256: file.sha256, url: file.url })) }));
             if (await exists(trusted.targetPath))
                 throw new Error('安装目标已出现，不会覆盖任何现有目录');
             await fs.rename(portable, trusted.targetPath);
@@ -532,7 +562,13 @@ export function createBootstrapManager(options: BootstrapOptions) {
                 const installedTier = restored.profile === 'environment' ? 'environment' : ['lite', 'balanced', 'standard'].includes(marker.installationTier) ? marker.installationTier as BootstrapPlan['recommendation']['tier'] : 'standard';
                 const recommendation = { ...restored.recommendation, tier: installedTier, label: installedTier === 'lite' ? 'H3 Lite · W4A8 + 4B 编码器' : installedTier === 'balanced' ? 'H3 均衡 · 官方 W6A8' : installedTier === 'standard' ? 'H3 标准 · 官方 INT8' : 'ComfyUI 基础环境', source: installedTier === 'lite' ? 'community' as const : 'official' as const, reason: '已安装的配置会保留；硬件变化不会自动替换模型', modelNames: installedFiles.filter(file => file.kind === 'model').map(file => file.name), requiredNodes: installedTier === 'lite' ? [...H3_LITE_NODES] : [], defaults: h3TierDefaults(installedTier), launchArgs: h3TierLaunchArgs(installedTier) };
                 recommendation.warnings = installedTier === 'lite' ? ['已安装社区 Lite 图，使用 ClipProj / Spectrum；当前方案仅视频，不含音频', '按硬件估算的试用配置，尚未在此电脑验证生成'] : installedTier === 'environment' ? [] : ['已保留原有官方音视频配置；启动后检查节点并进行首次试跑'];
-                currentPlan = { ...restored, recommendation, files: [restored.files[0], ...installedFiles], downloadBytes: restored.files[0].sizeBytes + installedFiles.reduce((sum, file) => sum + file.sizeBytes, 0) };
+                // Preserve an installed runtime just as we preserve its model tier.
+                // Legacy completed installations predate runtimeId and used cu130.
+                const installedRuntimeId = marker.runtimeId === 'cu126' ? 'cu126' : 'cu130';
+                const installedEnvironment = installedRuntimeId === restored.runtime?.id ? restored.files[0] : getPinnedEnvironmentFile(installedRuntimeId);
+                const runtimeChanged = installedRuntimeId !== restored.runtime?.id;
+                const installedRuntime = { ...restored.runtime!, id: installedRuntimeId as 'cu130' | 'cu126', label: installedRuntimeId === 'cu126' ? 'CUDA 12.6 · 旧显卡基础环境' : 'CUDA 13.0 · RTX 运行环境', cudaVersion: installedRuntimeId === 'cu126' ? '12.6' as const : '13.0' as const, ...(runtimeChanged ? { compatibility: 'unknown' as const, reason: '保留已安装的运行环境；当前设备是否兼容需要启动后检查', warnings: [...restored.runtime!.warnings, '设备配置已变化，已有运行包不会自动替换；请检查实际 GPU 运算与节点依赖'] } : {}) };
+                currentPlan = { ...restored, runtime: installedRuntime, recommendation, files: [installedEnvironment, ...installedFiles], downloadBytes: installedEnvironment.sizeBytes + installedFiles.reduce((sum, file) => sum + file.sizeBytes, 0) };
                 let missing = 0;
                 for (const file of installedFiles) {
                     try {
@@ -547,17 +583,18 @@ export function createBootstrapManager(options: BootstrapOptions) {
             const cache = path.join(restored.rootPath, '.luckyx-bootstrap');
             if (!await exists(cache)) return;
             await ownedResumeBytes(restored.rootPath, restored.targetPath, restored.version);
+            const cachePaths = environmentCachePaths(restored.files[0]);
             let receivedBytes = 0;
             for (const file of restored.files) {
-                const downloadedPath = file.kind === 'environment' ? path.join(cache, 'portable.7z') : file.kind === 'node' ? path.join(cache, 'nodes', file.name) : path.join(cache, 'unpacked/ComfyUI_windows_portable', file.relativePath);
+                const downloadedPath = file.kind === 'environment' ? path.join(cache, cachePaths.archiveName) : file.kind === 'node' ? path.join(cache, 'nodes', file.name) : path.join(cache, cachePaths.extractedName, 'ComfyUI_windows_portable', file.relativePath);
                 for (const candidate of [downloadedPath, downloadedPath + '.part']) {
                     try { const item = await noLinks(candidate); if (item.isFile()) { receivedBytes += Math.min(file.sizeBytes, item.size); break; } } catch { }
                 }
             }
-            const archiveReady = await matches(path.join(cache, 'portable.7z'), restored.files[0]);
-            const extracted = path.join(cache, 'unpacked/ComfyUI_windows_portable');
+            const archiveReady = await matches(path.join(cache, cachePaths.archiveName), restored.files[0]);
+            const extracted = path.join(cache, cachePaths.extractedName, 'ComfyUI_windows_portable');
             const wasExtracted = await getPortableLaunchPlan(extracted).then(() => true).catch(() => false);
-            publish({ status: 'cancelled', phase: wasExtracted ? '环境已解压，模型待完成' : archiveReady ? '环境包已下载，等待解压' : '下载已暂停，可继续', message: '已保留安装位置与下载进度，继续后校验并完成安装', receivedBytes, resumable: true });
+            publish({ status: 'cancelled', phase: wasExtracted && receivedBytes >= restored.downloadBytes ? '文件已准备，等待环境配置' : wasExtracted ? '环境已解压，模型待完成' : archiveReady ? '环境包已下载，等待解压' : '下载已暂停，可继续', message: restored.hardwareIssues.length ? '已保留安装位置与下载文件；' + restored.hardwareIssues.join('；') + '。处理后重新检查可继续安装' : '已保留安装位置与下载进度，继续后校验并完成安装', receivedBytes, resumable: true });
         } catch (error: any) { publish({ status: 'error', phase: '安装恢复检查', message: error.message ?? '无法恢复安装记录，请选择已有环境或重新检查', error: error.message, resumable: false }); }
     })();
     async function completedInstallation(): Promise<string> {

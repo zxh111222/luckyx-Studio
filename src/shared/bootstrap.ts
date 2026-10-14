@@ -3,6 +3,7 @@ export interface BootstrapHardware {
     vramMb: number;
     ramGb: number;
     driver: string;
+    cudaVersion?: string;
 }
 export interface BootstrapFile {
     id: string;
@@ -33,12 +34,23 @@ export interface BootstrapPlan {
     rootPath: string;
     targetPath: string;
     downloadBytes: number;
+    cachedBytes?: number;
     requiredFreeBytes: number;
     freeBytes: number;
     hardwareIssues: string[];
     recommendation: H3InstallationRecommendation;
     files: BootstrapFile[];
     tutorialUrl: string;
+    runtime?: BootstrapRuntime;
+}
+export interface BootstrapRuntime {
+    id: 'cu130' | 'cu126';
+    label: string;
+    cudaVersion: '13.0' | '12.6';
+    compatibility: 'supported' | 'conditional' | 'driver-update-required' | 'unknown' | 'unsupported';
+    reason: string;
+    warnings: string[];
+    driverUrl: string;
 }
 export type BootstrapStatus = 'idle' | 'planning' | 'downloading' | 'verifying' | 'extracting' | 'completed' | 'cancelled' | 'error';
 export interface BootstrapState {

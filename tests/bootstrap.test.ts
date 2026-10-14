@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 import { createBootstrapManager, assertOfficialDownloadUrl, validateArchiveListing, getPortableLaunchPlan } from '../src/backend/bootstrap';
 import { getEngineInstallation } from '../src/backend/engine-installation';
 import { getPinnedH3Files } from '../src/backend/h3-downloads';
+import { getPinnedEnvironmentFile, CUDA_GPU_PROBE_SCRIPT } from '../src/backend/cuda-runtime';
+import type { BootstrapHardware } from '../src/shared/bootstrap';
 async function temporary(t:any){const root=await fs.mkdtemp(path.join(os.tmpdir(),'luckyx-bootstrap-tests-'));t.after(async()=>{assert.equal(path.dirname(root),path.resolve(os.tmpdir()));assert.ok(path.basename(root).startsWith('luckyx-bootstrap-tests-'));await fs.rm(root,{recursive:true,force:true});});return root;}
 async function put(root:string,relative:string,content='mock-file'){const target=path.join(root,relative);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,content);}
 test('便携环境使用python_embeded和standalone参数，中文空格路径保持独立参数',async t=>{
@@ -18,22 +20,22 @@ test('便携环境使用python_embeded和standalone参数，中文空格路径�
 const archive = Buffer.from('small verified official archive fixture');
 const digest = (data:Buffer) => createHash('sha256').update(data).digest('hex');
 const officialUrl = 'https://github.com/Comfy-Org/ComfyUI/releases/download/v0.39.0/ComfyUI_windows_portable_nvidia.7z';
-const hardware = { gpuName:'NVIDIA GeForce RTX 4080',vramMb:16384,ramGb:32,driver:'fixture' };
+const hardware = { gpuName:'NVIDIA GeForce RTX 4080',vramMb:16384,ramGb:32,driver:'580.88',cudaVersion:'13.0' };
 const names = ['diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors','text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors','vae/minimax_h3_video_vae_int8_convrot.safetensors','vae/minimax_h3_audio_vae_fp32.safetensors','loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors'];
-async function fixture(t:any, overrides:{body?:(url:string,init?:RequestInit)=>Promise<Response>,free?:()=>number,cuda?:boolean,unsafeListing?:boolean}={}) {
+async function fixture(t:any, overrides:{body?:(url:string,init?:RequestInit)=>Promise<Response>,free?:()=>number,cuda?:boolean,computed?:boolean,probeCuda?:string,probeError?:boolean,unsafeListing?:boolean,getHardware?:()=>BootstrapHardware}={}) {
  const root=await temporary(t);const requests:Array<{url:string,range:string|null}>=[];const runs:string[][]=[];
  const fetcher = async (input:any,init?:RequestInit) => {
   const url=String(input);requests.push({url,range:new Headers(init?.headers).get('range')});
-  if(url.includes('api.github.com/')) return Response.json({assets:[{name:'ComfyUI_windows_portable_nvidia.7z',size:archive.length,digest:'sha256:'+digest(archive),browser_download_url:officialUrl}]});
+  if(url.includes('api.github.com/')) return Response.json({assets:['cu130','cu126'].map(id=>{const file=getPinnedEnvironmentFile(id as 'cu130'|'cu126');return{name:file.name,size:archive.length,digest:'sha256:'+digest(archive),browser_download_url:file.url};})});
   if(url.includes('/api/models/')) return Response.json({sha:'a'.repeat(40),siblings:names.map(rfilename=>({rfilename,lfs:{size:archive.length,sha256:digest(archive)}}))});
   return overrides.body ? overrides.body(url,init) : new Response(archive);
  };
  const modelFiles=(tier:Parameters<typeof getPinnedH3Files>[0])=>getPinnedH3Files(tier).map(file=>({...file,sizeBytes:archive.length,sha256:digest(archive)}));
- const options={dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,getModelFiles:modelFiles,getHardware:async()=>hardware,
+ const options={dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,getModelFiles:modelFiles,getHardware:async()=>overrides.getHardware?.()??hardware,
   runner:async(exe:string,args:string[])=>{runs.push([exe,...args]);const node=getPinnedH3Files('lite').find(file=>file.kind==='node'&&args.includes(path.join(root,'.luckyx-bootstrap/nodes',file.name)));
    if(args[0]==='l')return{stdout:overrides.unsafeListing?'Path = ../escape':node?'----------\nPath = '+node.archiveRoot+'/__init__.py':'----------\nPath = ComfyUI_windows_portable/python_embeded/python.exe\nPath = ComfyUI_windows_portable/ComfyUI/main.py'};
    if(args[0]==='x'){const extracted=args.find(a=>a.startsWith('-o'))!.slice(2);if(node)await put(extracted,node.archiveRoot+'/__init__.py');else{await put(extracted,'ComfyUI_windows_portable/python_embeded/python.exe');await put(extracted,'ComfyUI_windows_portable/ComfyUI/main.py');}return{stdout:''};}
-   assert.ok(exe.endsWith('python.exe'));return{stdout:JSON.stringify({cuda:'13.0',available:overrides.cuda!==false})};}};
+   assert.ok(exe.endsWith('python.exe'));assert.equal(args[2],CUDA_GPU_PROBE_SCRIPT);if(overrides.probeError)throw new Error('mock runtime crashed');return{stdout:JSON.stringify({cuda:overrides.probeCuda??'13.0',available:overrides.cuda!==false,computed:overrides.computed!==false})};}};
  const manager=createBootstrapManager(options);
  t.after(()=>manager.dispose());return{root,manager,requests,runs,options};
 }
@@ -127,7 +129,7 @@ test('重新打开恢复下载片段和计划，只读识别，不自动下载�
  const calls=f.requests.length;const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;const state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.resumable,true);assert.equal(state.receivedBytes,4);assert.equal(state.plan!.rootPath,p.rootPath);assert.equal(state.plan!.files[0].url,officialUrl);assert.ok(!f.requests.slice(calls).some(r=>r.url===officialUrl||r.url.includes('evil.test')));
 });
 test('恢复区分环境包已下载未解压、已解压模型未完整，完成后无需再次安装',async t=>{
- for(const extracted of [false,true]){const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'),archive);if(extracted){await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/python_embeded/python.exe');await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/ComfyUI/main.py');}await f.manager.dispose();const restored=createBootstrapManager(f.options);await restored.ready;assert.equal(restored.snapshot().phase,extracted?'环境已解压，模型待完成':'环境包已下载，等待解压');await restored.dispose();}
+ for(const extracted of [false,true]){const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'),archive);if(extracted){await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/python_embeded/python.exe');await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/ComfyUI/main.py');}await f.manager.dispose();const restored=createBootstrapManager(f.options);await restored.ready;assert.equal(restored.snapshot().phase,extracted?'文件已准备，等待环境配置':'环境包已下载，等待解压');await restored.dispose();}
  const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware});await f.manager.start(p);await f.manager.dispose();const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;assert.equal(restored.snapshot().status,'completed');assert.equal(restored.snapshot().installationPath,p.targetPath);assert.equal(restored.snapshot().resumable,false);
 });
 test('磁盘与硬件联合选择：大显存空间不够时降均衡或Lite，空间不足仍不下载',async t=>{
@@ -191,4 +193,55 @@ test('断流重试重新访问固定原始地址并重新核对CDN重定向',asy
   if(original===1)return new Response(archive.subarray(0,8));
   assert.equal(new Headers(init?.headers).get('range'),'bytes=8-');return new Response(archive.subarray(8),{status:206,headers:{'content-range':`bytes 8-${archive.length-1}/${archive.length}`}});
  }});const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});assert.equal((await f.manager.start(p)).status,'completed');assert.equal(original,2);assert.ok(f.requests.some(r=>r.url===cdn+'?attempt=2'));
+});
+
+test('RTX3070驱动546.30与CUDA12.3在任何资源下载前阻止，计划仍保留Lite模型清单',async t=>{
+ const old={gpuName:'NVIDIA GeForce RTX 3070',vramMb:8192,ramGb:32,driver:'546.30',cudaVersion:'12.3'};const f=await fixture(t,{getHardware:()=>old});
+ const p=await f.manager.plan({rootPath:f.root,hardware:old});assert.equal(p.runtime!.id,'cu130');assert.equal(p.runtime!.compatibility,'driver-update-required');assert.equal(p.recommendation.tier,'lite');assert.equal(p.files.filter(file=>file.kind==='model').length,4);
+ const result=await f.manager.start(p);assert.equal(result.status,'error');assert.match(result.error!,/546\.30.*580.*保留/);assert.equal(f.runs.length,0);assert.ok(!f.requests.some(r=>r.url===officialUrl||r.url.includes('/resolve/')));await assert.rejects(fs.stat(path.join(f.root,'.luckyx-bootstrap')),{code:'ENOENT'});
+});
+
+test('点击安装时重新读取实际驱动，旧计划不可绕过退回旧驱动后的阻止',async t=>{
+ let actual:BootstrapHardware={...hardware};const f=await fixture(t,{getHardware:()=>actual});const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});actual={...hardware,driver:'546.30',cudaVersion:'12.3'};
+ const result=await f.manager.start(p);assert.equal(result.status,'error');assert.match(result.error!,/580/);assert.ok(!f.requests.some(r=>r.url===officialUrl));assert.equal(f.runs.length,0);
+});
+
+test('GPU实际运算失败或探针进程崩溃均在模型下载前停止，已验证环境包保留',async t=>{
+ for(const override of [{computed:false},{cuda:false},{probeError:true},{probeCuda:'12.6'}]){
+  const f=await fixture(t,override);const p=await f.manager.plan({rootPath:f.root,hardware});const state=await f.manager.start(p);assert.equal(state.status,'error');assert.match(state.error!,/GPU|运行包与计划/);assert.equal(state.resumable,true);assert.ok(!f.requests.some(r=>r.url.includes('/resolve/')));assert.equal(digest(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'))),digest(archive));await assert.rejects(fs.stat(p.targetPath),{code:'ENOENT'});
+ }
+});
+
+test('旧GTX基础环境使用官方cu126独立缓存并实际运算，已有cu13包和模型完整保留',async t=>{
+ const legacy={gpuName:'NVIDIA GeForce GTX 1080',vramMb:8192,ramGb:16,driver:'546.30',cudaVersion:'12.3'};const f=await fixture(t,{getHardware:()=>legacy,probeCuda:'12.6'});const p=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});
+ assert.deepEqual(p.hardwareIssues,[]);assert.equal(p.runtime!.id,'cu126');assert.equal(p.files.length,1);assert.match(p.files[0].url,/_cu126\.7z$/);
+ await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await put(f.root,'.luckyx-bootstrap/portable.7z','keep old cu13');await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/ComfyUI/models/user.safetensors','keep existing model');
+ const state=await f.manager.start(p);assert.equal(state.status,'completed');assert.equal(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'),'utf8'),'keep old cu13');assert.equal(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/ComfyUI/models/user.safetensors'),'utf8'),'keep existing model');assert.equal(digest(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/portable-cu126.7z'))),digest(archive));assert.equal(f.runs.filter(r=>r[0].endsWith('python.exe')).length,2);assert.equal(JSON.parse(await fs.readFile(path.join(p.targetPath,'luckyx-managed.json'),'utf8')).runtimeId,'cu126');
+});
+
+test('旧驱动恢复已下载H3模型显示保留，升级重新检查后直接校验无需重下模型',async t=>{
+ let actual:BootstrapHardware={...hardware};const f=await fixture(t,{getHardware:()=>actual});const p=await f.manager.plan({rootPath:f.root,hardware});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'),archive);
+ await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/python_embeded/python.exe');await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/ComfyUI/main.py');for(const file of p.files.slice(1)){const destination=path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable',file.relativePath);await fs.mkdir(path.dirname(destination),{recursive:true});await fs.writeFile(destination,archive);}
+ await f.manager.dispose();actual={...hardware,driver:'546.30',cudaVersion:'12.3'};const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;let state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.resumable,true);assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(state.plan!.cachedBytes,p.downloadBytes);assert.equal(state.phase,'文件已准备，等待环境配置');assert.ok(state.plan!.hardwareIssues.length>0);assert.match(state.message,/保留.*580/);
+ actual={...hardware};const resumed=await restored.plan({rootPath:f.root,hardware:actual});assert.equal(resumed.cachedBytes,p.downloadBytes);assert.equal(restored.snapshot().receivedBytes,p.downloadBytes);const before=f.requests.length;state=await restored.start(resumed);assert.equal(state.status,'completed');assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(f.requests.length,before);for(const file of resumed.files.filter(file=>file.kind==='model'))assert.equal(digest(await fs.readFile(path.join(p.targetPath,file.relativePath))),digest(archive));
+});
+
+test('CUDA12.6基础环境完成后硬件变为RTX，恢复仍保留原runtime且不替换原文件',async t=>{
+ let actual:BootstrapHardware={gpuName:'NVIDIA GeForce GTX 1080',vramMb:8192,ramGb:16,driver:'580.88',cudaVersion:'13.0'};const f=await fixture(t,{getHardware:()=>actual,probeCuda:'12.6'});const p=await f.manager.plan({rootPath:f.root,hardware:actual,profile:'environment'});assert.equal((await f.manager.start(p)).status,'completed');await f.manager.dispose();actual={...hardware};const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;const state=restored.snapshot();assert.equal(state.status,'completed');assert.equal(state.plan!.runtime!.id,'cu126');assert.match(state.plan!.files[0].url,/_cu126\.7z$/);assert.equal(await restored.completedInstallation(),p.targetPath);
+});
+
+test('计划缓存仅计选中runtime资源和有限大小片段，不计其他runtime或解压Python文件',async t=>{
+ const legacy={gpuName:'NVIDIA GeForce GTX 1080',vramMb:8192,ramGb:16,driver:'580.88',cudaVersion:'13.0'};const f=await fixture(t,{getHardware:()=>legacy,probeCuda:'12.6'});const p=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});
+ await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await put(f.root,'.luckyx-bootstrap/portable.7z','ignore other runtime');await put(f.root,'.luckyx-bootstrap/unpacked-cu126/ComfyUI_windows_portable/python_embeded/python.exe','ignore extracted Python bytes');
+ let replanned=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});assert.equal(replanned.cachedBytes,0);assert.equal(f.manager.snapshot().receivedBytes,0);
+ await put(f.root,'.luckyx-bootstrap/portable-cu126.7z.part','part');replanned=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});assert.equal(replanned.cachedBytes,4);assert.equal(f.manager.snapshot().receivedBytes,4);
+ await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable-cu126.7z.part'),Buffer.alloc(archive.length+100));replanned=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});assert.equal(replanned.cachedBytes,archive.length);assert.ok(replanned.cachedBytes!<=replanned.downloadBytes);
+});
+
+test('最终GPU检查失败保留全量下载，但不继续显示最后一个模型文件作为故障对象',async t=>{
+ const finalUrl=getPinnedH3Files('balanced').at(-1)!.url;
+ const config={computed:true,body:async(url:string)=>{if(url===finalUrl)config.computed=false;return new Response(archive);}};
+ const f=await fixture(t,config);const p=await f.manager.plan({rootPath:f.root,hardware});const state=await f.manager.start(p);
+ assert.equal(state.status,'error');assert.match(state.error!,/GPU.*运算/);assert.equal(state.currentFile,undefined);assert.equal(state.receivedBytes,p.downloadBytes);
+ const again=await f.manager.plan({rootPath:f.root,hardware});assert.equal(again.cachedBytes,p.downloadBytes);
 });
