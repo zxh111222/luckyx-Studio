@@ -77,6 +77,10 @@ svg { flex-shrink: 0; }
 @media (max-height: 820px) {
   .main-content { --page-gutter: 1.714rem; }.page-heading { margin-bottom: 18px; }h1 { font-size: 2.286rem; }.page-heading > p, .page-heading > div > p { margin-top: 8px; }.workbench-page > .tabs { margin-bottom: 16px; }.params-panel, .preview-panel { padding: 20px; }.params-panel h2, .preview-panel h2 { margin-bottom: 16px; }.home-feature { height: 300px; }.hero-visual { min-height: 260px; }
 }
+@media (max-height: 820px) and (min-width: 761px) {
+  /* Reserve room for result metadata and export at the 1200 × 720 minimum. */
+  .result-player video { max-height: clamp(160px, calc(100dvh - 515px), 295px); }
+}
 @media (max-width: 1050px) {
   :root { --app-header-height: 128px; }.sidebar { flex-wrap: wrap; justify-content: space-between; gap: 2px 18px; padding: 10px 24px 0; }.sidebar nav { order: 3; width: 100%; flex: 0 0 100%; min-height: 52px; justify-content: center; }
   .main-content { --page-gutter: 1.714rem; }.workbench-grid { grid-template-columns: 320px minmax(0, 1fr); gap: 14px; }.workbench-header-actions { gap: 8px; }.workbench-header-actions > .text-button:last-child { display: none; }.home-feature { height: auto; grid-template-columns: 1fr; }.hero-visual { height: 280px; }.feature-details { gap: 20px; }.device-strip { grid-template-columns: minmax(200px, 1fr) 1fr; }.device-item:nth-child(3) { border-left: 0; padding-left: 0; }

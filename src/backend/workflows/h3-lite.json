@@ -1,0 +1,200 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_4b_int8_convrot.safetensors",
+      "type": "krea2",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    }
+  },
+  "6": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+      "clip": [
+        "17",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "prompt": "A cinematic close-up of a small orange cat sitting beside a sunlit window. The cat slowly turns its head toward the camera and blinks. Warm natural morning light, realistic fur, gentle camera movement. Audio: soft indoor ambience and one quiet meow. No subtitles, no text, no watermark.",
+      "width": 608,
+      "height": 352,
+      "length": 56,
+      "first_frame": [
+        "16",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 20261013
+    }
+  },
+  "8": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "20",
+        0
+      ],
+      "conditioning": [
+        "6",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "10": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "20",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 20,
+      "denoise": 1
+    }
+  },
+  "11": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "7",
+        0
+      ],
+      "guider": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "9",
+        0
+      ],
+      "sigmas": [
+        "10",
+        0
+      ],
+      "latent_image": [
+        "6",
+        1
+      ]
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "11",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "14": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "15": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "14",
+        0
+      ],
+      "filename_prefix": "MiniMax-H3/test-i2v",
+      "format": "mp4",
+      "format.codec": "h264",
+      "format.codec.encoding": "auto"
+    }
+  },
+  "16": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "h3-test-first-frame.png"
+    }
+  },
+  "17": {
+    "inputs": {
+      "projection": "mmh3-4b-ClipProj-v3-mlp.safetensors",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "ClipProjApply"
+  },
+  "18": {
+    "inputs": {
+      "attention": "comfy kitchen attention",
+      "model": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "ModelAttentionBackend"
+  },
+  "19": {
+    "inputs": {
+      "shift_audio": 3,
+      "shift_video": 12,
+      "model": [
+        "18",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3SigmaShift"
+  },
+  "20": {
+    "inputs": {
+      "degree": 1,
+      "warmup_steps": 1,
+      "blend_weight": 0.5,
+      "max_history": 8,
+      "flex_window": 0.75,
+      "enabled": true,
+      "debug": false,
+      "tail_actual_steps": 1,
+      "history_storage": "system_ram",
+      "ridge_lambda": 0.1,
+      "model": [
+        "19",
+        0
+      ],
+      "window_size": 2
+    },
+    "class_type": "SpectrumApplyMiniMaxH3"
+  }
+}

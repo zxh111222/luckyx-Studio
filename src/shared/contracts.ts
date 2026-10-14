@@ -49,6 +49,9 @@ export interface WorkflowTemplate {
     defaultSteps: number;
     frames: number;
     fps: number;
+    installationTier?: import('./bootstrap').H3InstallationTier;
+    audio?: boolean;
+    defaultResolution?: { width: number; height: number };
 }
 export interface OutputFile {
     filename: string;

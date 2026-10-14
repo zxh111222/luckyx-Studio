@@ -12,6 +12,7 @@ commands.add('task.remove')
 commands.add('workflow.recipeImport')
 commands.add('bootstrap.status')
 commands.add('bootstrap.plan')
+commands.add('bootstrap.connect')
 const allowedOrigins = new Set(['http://127.0.0.1:4173', 'http://localhost:4173'])
 const server = createHttpServer(async (request, response) => {
   response.setHeader('X-Content-Type-Options', 'nosniff')

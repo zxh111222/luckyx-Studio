@@ -6,6 +6,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { createBootstrapManager, assertOfficialDownloadUrl, validateArchiveListing, getPortableLaunchPlan } from '../src/backend/bootstrap';
 import { getEngineInstallation } from '../src/backend/engine-installation';
+import { getPinnedH3Files } from '../src/backend/h3-downloads';
 async function temporary(t:any){const root=await fs.mkdtemp(path.join(os.tmpdir(),'luckyx-bootstrap-tests-'));t.after(async()=>{assert.equal(path.dirname(root),path.resolve(os.tmpdir()));assert.ok(path.basename(root).startsWith('luckyx-bootstrap-tests-'));await fs.rm(root,{recursive:true,force:true});});return root;}
 async function put(root:string,relative:string,content='mock-file'){const target=path.join(root,relative);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,content);}
 test('便携环境使用python_embeded和standalone参数，中文空格路径保持独立参数',async t=>{
@@ -27,11 +28,14 @@ async function fixture(t:any, overrides:{body?:(url:string,init?:RequestInit)=>P
   if(url.includes('/api/models/')) return Response.json({sha:'a'.repeat(40),siblings:names.map(rfilename=>({rfilename,lfs:{size:archive.length,sha256:digest(archive)}}))});
   return overrides.body ? overrides.body(url,init) : new Response(archive);
  };
- const manager=createBootstrapManager({dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,
-  runner:async(exe,args)=>{runs.push([exe,...args]);if(args[0]==='l')return{stdout:overrides.unsafeListing?'Path = ../escape':'----------\nPath = ComfyUI_windows_portable/python_embeded/python.exe\nPath = ComfyUI_windows_portable/ComfyUI/main.py'};
-   if(args[0]==='x'){const extracted=args.find(a=>a.startsWith('-o'))!.slice(2);await put(extracted,'ComfyUI_windows_portable/python_embeded/python.exe');await put(extracted,'ComfyUI_windows_portable/ComfyUI/main.py');return{stdout:''};}
-   assert.ok(exe.endsWith('python.exe'));return{stdout:JSON.stringify({cuda:'13.0',available:overrides.cuda!==false})};}});
- t.after(()=>manager.dispose());return{root,manager,requests,runs};
+ const modelFiles=(tier:Parameters<typeof getPinnedH3Files>[0])=>getPinnedH3Files(tier).map(file=>({...file,sizeBytes:archive.length,sha256:digest(archive)}));
+ const options={dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,getModelFiles:modelFiles,getHardware:async()=>hardware,
+  runner:async(exe:string,args:string[])=>{runs.push([exe,...args]);const node=getPinnedH3Files('lite').find(file=>file.kind==='node'&&args.includes(path.join(root,'.luckyx-bootstrap/nodes',file.name)));
+   if(args[0]==='l')return{stdout:overrides.unsafeListing?'Path = ../escape':node?'----------\nPath = '+node.archiveRoot+'/__init__.py':'----------\nPath = ComfyUI_windows_portable/python_embeded/python.exe\nPath = ComfyUI_windows_portable/ComfyUI/main.py'};
+   if(args[0]==='x'){const extracted=args.find(a=>a.startsWith('-o'))!.slice(2);if(node)await put(extracted,node.archiveRoot+'/__init__.py');else{await put(extracted,'ComfyUI_windows_portable/python_embeded/python.exe');await put(extracted,'ComfyUI_windows_portable/ComfyUI/main.py');}return{stdout:''};}
+   assert.ok(exe.endsWith('python.exe'));return{stdout:JSON.stringify({cuda:'13.0',available:overrides.cuda!==false})};}};
+ const manager=createBootstrapManager(options);
+ t.after(()=>manager.dispose());return{root,manager,requests,runs,options};
 }
 test('官方来源只允许指定HTTPS仓库和CDN，伪域认证其他仓库及非标准端口拒绝',()=>{
  assert.equal(assertOfficialDownloadUrl(officialUrl),officialUrl);
@@ -101,12 +105,37 @@ test('新安装目录计划只读不创建，确认启动后才创建并完成po
  await assert.rejects(fs.stat(path.join(f.root,'新安装位置')),{code:'ENOENT'});assert.equal(p.rootPath,freshRoot);assert.deepEqual(p.hardwareIssues,[]);
  const state=await f.manager.start(p);assert.equal(state.status,'completed');assert.equal(state.installationPath,path.join(freshRoot,'luckyx-environment'));const launch=await getPortableLaunchPlan(state.installationPath!);assert.equal(launch.cwd,state.installationPath);
 });
-test('RTX4080实际16376MiB允许H3条件安装，低于16000MiB仍明确阻止',async t=>{
+test('RTX4080实际16376MiB/31GB使用官方均衡，8GB起使用社区Lite而非仅放宽阈值',async t=>{
  const f=await fixture(t);for(const vramMb of [16376,16000]){const p=await f.manager.plan({rootPath:f.root,hardware:{...hardware,vramMb,ramGb:31}});assert.deepEqual(p.hardwareIssues,[]);}
- const low=await f.manager.plan({rootPath:f.root,hardware:{...hardware,vramMb:15999}});assert.ok(low.hardwareIssues.some(issue=>issue.includes('显存')));const state=await f.manager.start(low);assert.equal(state.status,'error');assert.ok(!f.requests.some(r=>r.url===officialUrl));
+ const low=await f.manager.plan({rootPath:f.root,hardware:{...hardware,vramMb:8192,ramGb:16}});assert.deepEqual(low.hardwareIssues,[]);assert.equal(low.recommendation.tier,'lite');assert.equal(low.files.filter(file=>file.kind==='model').length,4);assert.equal(low.files.filter(file=>file.kind==='node').length,2);assert.equal(low.recommendation.defaults.audio,false);assert.ok(low.files.some(file=>file.name.includes('w4a8')));
 });
 test('既有venv环境仍复用启动适配脚本，缺入口或空Python不可启动',async t=>{
  const root=await temporary(t);await put(root,'venv/Scripts/python.exe');await put(root,'ComfyUI/main.py');await put(root,'launch_comfy.py');
  const plan=await getEngineInstallation(root);assert.equal(plan.python,path.join(root,'venv/Scripts/python.exe'));assert.equal(plan.launcher,path.join(root,'launch_comfy.py'));assert.deepEqual(plan.args,[path.join(root,'launch_comfy.py'),'--fast-disk']);
  await fs.writeFile(plan.python,'');await assert.rejects(getEngineInstallation(root),/完整的已有环境/);
+});
+test('Lite自动校验四模型，两个节点ZIP安全解压到custom_nodes并写持久档位',async t=>{
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware:{...hardware,vramMb:8192,ramGb:16}});const state=await f.manager.start(p);assert.equal(state.status,'completed');assert.equal(state.completedFiles,7);
+ for(const file of p.files.filter(file=>file.kind==='model'))assert.equal(digest(await fs.readFile(path.join(p.targetPath,file.relativePath))),file.sha256);
+ for(const file of p.files.filter(file=>file.kind==='node')){assert.ok((await fs.stat(path.join(p.targetPath,file.relativePath,'__init__.py'))).isFile());assert.equal(JSON.parse(await fs.readFile(path.join(p.targetPath,file.relativePath,'.luckyx-source.json'),'utf8')).sha256,file.sha256);}
+ const marker=JSON.parse(await fs.readFile(path.join(p.targetPath,'luckyx-managed.json'),'utf8'));assert.equal(marker.installationTier,'lite');assert.equal(marker.models.length,4);assert.equal(marker.nodes.length,2);assert.equal(marker.defaults.audio,false);
+});
+test('重新打开恢复下载片段和计划，只读识别，不自动下载；保存JSON无法替换来源',async t=>{
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});
+ await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await put(f.root,'.luckyx-bootstrap/portable.7z.part','part');await f.manager.dispose();
+ const record=JSON.parse(await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8'));record.files=[{url:'https://evil.test/weight'}];await put(f.root,'data/bootstrap-progress.json',JSON.stringify(record));
+ const calls=f.requests.length;const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;const state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.resumable,true);assert.equal(state.receivedBytes,4);assert.equal(state.plan!.rootPath,p.rootPath);assert.equal(state.plan!.files[0].url,officialUrl);assert.ok(!f.requests.slice(calls).some(r=>r.url===officialUrl||r.url.includes('evil.test')));
+});
+test('恢复区分环境包已下载未解压、已解压模型未完整，完成后无需再次安装',async t=>{
+ for(const extracted of [false,true]){const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'),archive);if(extracted){await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/python_embeded/python.exe');await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/ComfyUI/main.py');}await f.manager.dispose();const restored=createBootstrapManager(f.options);await restored.ready;assert.equal(restored.snapshot().phase,extracted?'环境已解压，模型待完成':'环境包已下载，等待解压');await restored.dispose();}
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware});await f.manager.start(p);await f.manager.dispose();const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;assert.equal(restored.snapshot().status,'completed');assert.equal(restored.snapshot().installationPath,p.targetPath);assert.equal(restored.snapshot().resumable,false);
+});
+test('磁盘与硬件联合选择：大显存空间不够时降均衡或Lite，空间不足仍不下载',async t=>{
+ const f=await fixture(t);const bytes=(tier:Parameters<typeof getPinnedH3Files>[0])=>getPinnedH3Files(tier).reduce((sum,file)=>sum+file.sizeBytes,0)+5*1024**3+archive.length*5;
+ for(const [free,tier] of [[bytes('standard')+1,'standard'],[bytes('balanced')+1,'balanced'],[bytes('lite')+1,'lite']] as const){const manager=createBootstrapManager({...f.options,getModelFiles:getPinnedH3Files,getFreeBytes:async()=>free});await manager.ready;const plan=await manager.plan({rootPath:f.root,hardware:{...hardware,vramMb:32768,ramGb:64}});assert.equal(plan.recommendation.tier,tier);assert.ok(plan.requiredFreeBytes<=plan.freeBytes);if(tier!=='standard')assert.match(plan.recommendation.reason,/磁盘空间/);await manager.dispose();}
+ const manager=createBootstrapManager({...f.options,getModelFiles:getPinnedH3Files,getFreeBytes:async()=>1024**3});await manager.ready;const plan=await manager.plan({rootPath:f.root,hardware});const result=await manager.start(plan);assert.equal(result.status,'error');assert.match(result.error!,/磁盘空间/);await manager.dispose();
+});
+test('恢复不接受已安装节点或模型缺失，不重新覆盖环境；未知marker档位保守处理',async t=>{
+ const f=await fixture(t);const plan=await f.manager.plan({rootPath:f.root,hardware});await f.manager.start(plan);await f.manager.dispose();const model=plan.files.find(file=>file.kind==='model')!;await fs.writeFile(path.join(plan.targetPath,model.relativePath),'');
+ const restored=createBootstrapManager(f.options);await restored.ready;assert.equal(restored.snapshot().status,'error');assert.match(restored.snapshot().phase,/资源不完整/);assert.equal(restored.snapshot().resumable,false);await restored.dispose();assert.equal((await fs.stat(path.join(plan.targetPath,model.relativePath))).size,0);
 });

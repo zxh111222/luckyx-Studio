@@ -1,10 +1,12 @@
 import type { Snapshot, OutputFile } from '../../shared/contracts'
 import { validateReferenceUrl } from '../../shared/reference-url'
+import type { CloseRequest } from '../../shared/close-policy'
 
 interface DesktopBridge {
   desktop: boolean
   invoke(command: string, payload?: unknown): Promise<unknown>
   onSnapshot(callback: (snapshot: Snapshot) => void): () => void
+  onCloseRequested(callback: (request: CloseRequest) => void): () => void
   windowControl(action: 'minimize' | 'maximize' | 'close'): void
 }
 

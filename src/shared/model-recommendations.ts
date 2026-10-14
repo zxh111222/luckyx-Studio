@@ -1,11 +1,14 @@
-/** Research only: these entries do not install models or register runnable Studio templates. */
+import { h3ModelSpecs, recommendH3Installation } from './h3-installation'
+
+/** Model guides share H3 hardware choices with the installer; other models remain manual. */
 export type RecommendationLevel = 'recommended' | 'conditional' | 'not-recommended' | 'unknown'
 export interface ModelRecommendation {
   id: string
   name: string
   purpose: string
   description: string
-  evidence: 'official-compatibility' | 'local-history'
+  evidence: 'official-compatibility' | 'local-history' | 'community-workflow'
+  source?: 'official' | 'community'
   tutorialUrl: string
   repositoryUrl: string
   downloads: { name: string; folder: string; url: string }[]
@@ -91,7 +94,7 @@ export const modelRecommendations: readonly ModelRecommendation[] = [
 ]
 
 /** Pure hardware screening; no installation state, template readiness, or performance guarantee. */
-export function rankModelRecommendations(vramMb: number, ramGb: number): (ModelRecommendation & { level: RecommendationLevel; levelLabel: string })[] {
+export function rankModelRecommendations(vramMb: number, ramGb: number, gpuName?: string): (ModelRecommendation & { level: RecommendationLevel; levelLabel: string })[] {
   const known = Number.isFinite(vramMb) && Number.isFinite(ramGb) && vramMb > 0 && ramGb > 0
   return modelRecommendations.map(model => {
     // Driver/OS reporting can omit a small reserved amount: 16376 MiB is a 16 GB class card.
@@ -99,11 +102,36 @@ export function rankModelRecommendations(vramMb: number, ramGb: number): (ModelR
     const gpuGb = vramMb / 1024 + 0.05
     const availableRamClassGb = ramGb + 1
     const thresholds = model.screening
-    const level: RecommendationLevel = !known ? 'unknown'
+    let level: RecommendationLevel = !known ? 'unknown'
       : gpuGb >= thresholds.preferredVramGb && availableRamClassGb >= thresholds.preferredRamGb ? 'recommended'
       : gpuGb >= thresholds.trialVramGb && availableRamClassGb >= thresholds.trialRamGb ? 'conditional' : 'not-recommended'
+    let item = model
+    if (model.id === 'minimax-h3-existing' && known) {
+      // Without a GPU name this is a capacity-only calculation. The UI always supplies the real name.
+      const { recommendation: choice, hardwareIssues } = recommendH3Installation({ gpuName: gpuName ?? 'NVIDIA RTX 4080', vramMb, ramGb, driver: '未知' })
+      level = hardwareIssues.length ? 'not-recommended' : choice.tier === 'lite' ? 'conditional' : 'recommended'
+      if (choice.tier !== 'environment') {
+        const lite = choice.tier === 'lite'
+        const liteRepositories: Record<string, string> = {
+          diffusion_models: 'starsfriday/MiniMax-H3-w4a8', text_encoders: 'Stick9190/qwen3vl_4b_int8_convrot',
+          vae: 'Comfy-Org/MiniMax-H3', clip_projections: 'NicoLab28/ClipProj-MiniMax-H3'
+        }
+        item = { ...model, name: lite ? 'MiniMax H3 Lite · 8 GB 起' : choice.tier === 'balanced' ? 'MiniMax H3 · W6A8 音画同步' : 'MiniMax H3 · INT8 音画同步',
+          purpose: lite ? '图生视频、文生视频 · 无音频低配方案' : model.purpose,
+          description: choice.reason, source: choice.source, evidence: lite ? 'community-workflow' : 'official-compatibility',
+          tutorialUrl: lite ? 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM' : 'https://docs.comfy.org/tutorials/video/minimax/minimax-h3-native',
+          repositoryUrl: lite ? 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM' : model.repositoryUrl,
+          downloads: h3ModelSpecs(choice.tier).map(([folder, name]) => ({ folder, name, url: lite && folder !== 'vae' ? `https://huggingface.co/${liteRepositories[folder]}/blob/main/${name}` : `${h3}/${folder}/${name}` })),
+          initial: { width: choice.defaults.width, height: choice.defaults.height, frames: choice.defaults.frames, note: `${choice.defaults.steps} 步 · 24 fps · ${choice.defaults.audio ? '含音频' : '不含音频'}；从短片试跑，再逐步提高参数。` },
+          conditions: [...choice.warnings, `启动参数：${choice.launchArgs.join(' ') || '默认内存管理'}`, ...(lite ? ['需要固定版本 ClipProj 与 Spectrum 节点，4B 编码器搭配 4B ClipProj 投影。'] : ['需要匹配的 32B 编码器、双 VAE 与 4 步 Turbo LoRA。'])],
+          steps: ['打开“安装与连接”，按实际显卡和系统内存检查安装方案', '核对下载量、模型与来源清单，选择空间充足的目录', '确认后自动下载、校验、解压环境并放置模型与节点', '安装后检查依赖，先用建议参数生成短片'],
+          sourceNote: lite ? '社区作者在 RTX 4060 Laptop 8 GB 显存、16 GB 内存下实测；其他设备需试跑，画质与速度可能有差异。' : choice.reason,
+          screenshotPath: lite ? '/model-guides/minimax-h3-lite-community.jpg' : model.screenshotPath
+        }
+      } else item = { ...model, description: hardwareIssues.join('；'), sourceNote: '自动安装从 8 GB 显存、约 16 GB 系统内存起；不满足条件时可先安装基础环境，或参考手动教程。' }
+    }
     const levelLabel = { recommended: '推荐尝试', conditional: '建议降低参数试用', 'not-recommended': '当前配置暂不推荐', unknown: '等待设备检测' }[level]
-    return { ...model, level, levelLabel }
+    return { ...item, level, levelLabel }
   })
 }
 

@@ -1,5 +1,7 @@
 import template from '../backend/workflows/h3-i2v.json';
+import liteTemplate from '../backend/workflows/h3-lite.json';
 import type { GenerationParams, OutputFile } from './contracts';
+import type { H3InstallationTier } from './bootstrap';
 import { H3_MAX_PIXELS } from './h3-parameters';
 export type ApiWorkflow = Record<string, {
     class_type: string;
@@ -17,7 +19,7 @@ export function validateEngineUrl(value: string): string {
         throw new Error('仅支持本机 HTTP 引擎地址');
     return u.origin;
 }
-export function validateGenerationParams(value: unknown): GenerationParams {
+export function validateGenerationParams(value: unknown, expectedSteps = 4): GenerationParams {
     const p = value as GenerationParams;
     if (!p || p.templateId !== 'h3-i2v')
         throw new Error('请选择 MiniMax H3 视频模板');
@@ -29,8 +31,8 @@ export function validateGenerationParams(value: unknown): GenerationParams {
         throw new Error('宽高需为 256～2048 内的 32 倍数，总像素不能超过 1344×768');
     if (!Number.isInteger(p.frames) || p.frames < 5 || p.frames > 362 || (p.frames - 5) % 17 !== 0)
         throw new Error('帧数需在 5～362 内，并按 17n+5 对齐');
-    if (p.steps !== 4)
-        throw new Error('当前 Turbo 模板固定 4 步');
+    if (p.steps !== expectedSteps)
+        throw new Error(expectedSteps === 20 ? '当前 H3 Lite 模板固定 20 步' : '当前 Turbo 模板固定 4 步');
     if (!Number.isSafeInteger(p.seed) || p.seed < 0)
         throw new Error('种子必须为非负安全整数');
     return { ...p, mode: p.mode ?? 'image', prompt: p.prompt.trim() };
@@ -56,9 +58,10 @@ export function validateImage(image: GenerationParams['image']): {
     const extension = png ? 'png' : jpg ? 'jpg' : 'webp';
     return { bytes, name: `first-frame.${extension}`, mime: png ? 'image/png' : jpg ? 'image/jpeg' : 'image/webp' };
 }
-export function buildWorkflow(params: GenerationParams, uploadedName: string, taskId: string): ApiWorkflow {
-    const p = validateGenerationParams(params);
-    const graph = structuredClone(template) as ApiWorkflow;
+export function buildWorkflow(params: GenerationParams, uploadedName: string, taskId: string, tier: H3InstallationTier = 'standard'): ApiWorkflow {
+    const p = validateGenerationParams(params, tier === 'lite' ? 20 : 4);
+    const graph = structuredClone(tier === 'lite' ? liteTemplate : template) as ApiWorkflow;
+    if (tier === 'balanced') graph['1'].inputs.unet_name = 'minimax_h3_fl2va_pruned_w6a8.safetensors';
     Object.assign(graph['6'].inputs, { prompt: p.prompt, width: p.width, height: p.height, length: p.frames });
     graph['7'].inputs.noise_seed = p.seed;
     graph['10'].inputs.steps = p.steps;

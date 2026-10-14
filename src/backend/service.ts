@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 import initSqlJs from 'sql.js';
 import { createRequire } from 'node:module';
 import WebSocket from 'ws';
-import templateGraph from './workflows/h3-i2v.json';
 import type { Snapshot, StudioService, TaskRecord, Settings, GenerationParams, UserWorkflow, UserWorkflowDocument, VideoRecipeEntry } from '../shared/contracts';
 import { validateEngineUrl, validateGenerationParams, validateImage, buildWorkflow, mapHistoryOutputs, isPromptRunning, safeOutputPath } from '../shared/workflow';
 import { parseWorkflowJson, validateWorkflowName, createEmptyWorkflowJson } from '../shared/workflow-library';
@@ -16,13 +15,19 @@ import { getEngineInstallation } from './engine-installation';
 import { createBootstrapManager } from './bootstrap';
 import type { BootstrapPlan } from '../shared/bootstrap';
 import { canRemoveTask } from '../shared/task-policy';
-const MODEL_SPECS = [['diffusion_models', 'minimax_h3_fl2va_pruned_int8_convrot.safetensors'], ['text_encoders', 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'], ['vae', 'minimax_h3_video_vae_int8_convrot.safetensors'], ['vae', 'minimax_h3_audio_vae_fp32.safetensors'], ['loras', 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors']];
+import { H3_STANDARD_MODELS } from '../shared/h3-installation';
+import { getH3Runtime } from './h3-runtime';
+const MODEL_SPECS = H3_STANDARD_MODELS;
 const activeStatuses = ['submitting', 'queued', 'running', 'unknown'];
 export async function createStudioService(options: {
     dataDir: string;
     defaultInstallationPath?: string;
+    defaultEngineUrl?: string;
     outputBaseUrl?: string;
     sevenZipPath?: string;
+    spawnEngine?: typeof spawn;
+    terminateEngine?: (child: ChildProcess) => Promise<void>;
+    bootstrapManager?: ReturnType<typeof createBootstrapManager>;
 }): Promise<StudioService> {
     await fs.mkdir(options.dataDir, { recursive: true });
     const dbPath = path.join(options.dataDir, 'studio.sqlite');
@@ -40,7 +45,7 @@ export async function createStudioService(options: {
     db.run('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     db.run('CREATE TABLE IF NOT EXISTS user_workflows (id TEXT PRIMARY KEY, metadata TEXT NOT NULL, json TEXT NOT NULL)');
     const installationPath = options.defaultInstallationPath ?? path.resolve(options.dataDir, 'environments/luckyx-environment');
-    const snapshot: Snapshot = { settings: { installationPath, modelPath: path.join(installationPath, 'ComfyUI/models'), outputPath: path.join(options.dataDir, 'output'), inputPath: path.join(options.dataDir, 'input'), engineUrl: 'http://127.0.0.1:8188', initialized: false }, engine: { status: 'offline', managed: false, queue: 0, message: '尚未连接引擎' }, hardware: { gpuName: '检测中', vramMb: 0, ramGb: Math.round(os.totalmem() / 1024 ** 3), driver: '未知' }, templates: [{ id: 'h3-i2v', name: 'MiniMax H3 · 图生视频', description: '支持首帧或纯提示词，默认约 5.17 秒含音频视频', ready: false, issues: ['尚未验证运行节点'], models: MODEL_SPECS.map(x => x[1]), resolutions: [{ label: '864 × 480', width: 864, height: 480 }, { label: '832 × 480', width: 832, height: 480 }], defaultSteps: 4, frames: 124, fps: 24 }], tasks: [], resources: [], logs: [], presets: [], userWorkflows: [] };
+    const snapshot: Snapshot = { settings: { installationPath, modelPath: path.join(installationPath, 'ComfyUI/models'), outputPath: path.join(options.dataDir, 'output'), inputPath: path.join(options.dataDir, 'input'), engineUrl: options.defaultEngineUrl ?? 'http://127.0.0.1:8188', initialized: false }, engine: { status: 'offline', managed: false, queue: 0, message: '尚未连接引擎' }, hardware: { gpuName: '检测中', vramMb: 0, ramGb: Math.round(os.totalmem() / 1024 ** 3), driver: '未知' }, templates: [{ id: 'h3-i2v', name: 'MiniMax H3 · 图生视频', description: '支持首帧或纯提示词，默认约 5.17 秒含音频视频', ready: false, issues: ['尚未验证运行节点'], models: MODEL_SPECS.map(x => x[1]), resolutions: [{ label: '864 × 480', width: 864, height: 480 }, { label: '832 × 480', width: 832, height: 480 }], defaultSteps: 4, frames: 124, fps: 24 }], tasks: [], resources: [], logs: [], presets: [], userWorkflows: [] };
     const rows = db.exec('SELECT key,value FROM state')[0]?.values ?? [];
     for (const [key, value] of rows) {
         if (['settings', 'tasks', 'presets'].includes(String(key))) {
@@ -58,11 +63,14 @@ export async function createStudioService(options: {
         catch { }
     }
     snapshot.settings.engineUrl = validateEngineUrl(snapshot.settings.engineUrl);
+    let h3Runtime = await getH3Runtime(snapshot.settings.installationPath, snapshot.settings.modelPath);
     const listeners = new Set<(s: Snapshot) => void>();
     let child: ChildProcess | undefined;
     let socket: WebSocket | undefined;
     let disposed = false;
-    const bootstrap = createBootstrapManager({ dataDir: options.dataDir, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe') });
+    let closing = false, shutdownFlight: Promise<void> | undefined;
+    const shutdownController = new AbortController();
+    const bootstrap = options.bootstrapManager ?? createBootstrapManager({ dataDir: options.dataDir, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe'), getHardware: async () => { await hardwareReady; return structuredClone(snapshot.hardware); } });
     let bootstrapPlan: BootstrapPlan | undefined;
     let bootstrapFlight: Promise<void> | undefined;
     let bootstrapConnectionError: string | undefined;
@@ -82,6 +90,11 @@ export async function createStudioService(options: {
             }
     };
     const log = (level: 'info' | 'warn' | 'error', message: string) => { snapshot.logs.push({ at: new Date().toISOString(), level, message }); snapshot.logs = snapshot.logs.slice(-200); emit(); };
+    const hardwareReady = promisify(execFile)('nvidia-smi', ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'], { windowsHide: true, timeout: 5000 }).then(({ stdout }) => {
+        const [gpuName, vram, driver] = stdout.trim().split('\n')[0].split(',').map(s => s.trim());
+        snapshot.hardware = { ...snapshot.hardware, gpuName, vramMb: Number(vram) || 0, driver };
+        emit();
+    }).catch(() => { snapshot.hardware.gpuName = '未检测到 NVIDIA 显卡'; emit(); });
     let writes = Promise.resolve();
     const persist = () => {
         if (disposed)
@@ -89,11 +102,11 @@ export async function createStudioService(options: {
         for (const key of ['settings', 'tasks', 'presets'])
             db.run('INSERT OR REPLACE INTO state(key,value) VALUES(?,?)', [key, JSON.stringify((snapshot as any)[key])]);
         const exported = Buffer.from(db.export());
-        writes = writes.then(async () => { await fs.writeFile(dbPath + '.tmp', exported); await fs.rename(dbPath + '.tmp', dbPath); });
+        writes = writes.catch(() => {}).then(async () => { await fs.writeFile(dbPath + '.tmp', exported); await fs.rename(dbPath + '.tmp', dbPath); });
         return writes;
     };
     async function api(endpoint: string, init: RequestInit = {}, timeout = 10000): Promise<any> {
-        const response = await fetch(snapshot.settings.engineUrl + endpoint, { ...init, redirect: 'error', signal: AbortSignal.timeout(timeout) });
+        const response = await fetch(snapshot.settings.engineUrl + endpoint, { ...init, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(timeout), shutdownController.signal]) });
         if (!response.ok) {
             let detail = '';
             try {
@@ -107,7 +120,10 @@ export async function createStudioService(options: {
     }
     const post = (endpoint: string, data: unknown) => api(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     async function scan() {
-        snapshot.resources = await Promise.all(MODEL_SPECS.map(async ([folder, name]) => {
+        h3Runtime = await getH3Runtime(snapshot.settings.installationPath, snapshot.settings.modelPath);
+        const defaults = h3Runtime.defaults;
+        Object.assign(snapshot.templates[0], { installationTier: h3Runtime.tier, audio: defaults.audio, defaultResolution: { width: defaults.width, height: defaults.height }, defaultSteps: defaults.steps, frames: defaults.frames, fps: defaults.fps, models: h3Runtime.modelSpecs.map(([, name]) => name), resolutions: [{ label: `${defaults.width} × ${defaults.height}`, width: defaults.width, height: defaults.height }, { label: `${defaults.height} × ${defaults.width} · 竖屏`, width: defaults.height, height: defaults.width }], name: h3Runtime.tier === 'lite' ? 'MiniMax H3 Lite · 视频' : 'MiniMax H3 · 图生视频', description: h3Runtime.tier === 'lite' ? '社区低显存图生与文生视频；20 步，不含音频，首次仍需试跑' : `支持首帧或纯提示词，默认约 ${(defaults.frames / defaults.fps).toFixed(2)} 秒含音频视频` });
+        snapshot.resources = await Promise.all(h3Runtime.modelSpecs.map(async ([folder, name]) => {
             const file = path.join(snapshot.settings.modelPath, folder, name);
             try {
                 const st = await fs.stat(file);
@@ -132,13 +148,14 @@ export async function createStudioService(options: {
         const issues = snapshot.resources.filter(x => x.status === 'missing').map(x => '缺少模型：' + x.name);
         try {
             const info = await api('/object_info');
+            const templateGraph = buildWorkflow({ templateId: 'h3-i2v', prompt: 'Dependency validation', ...h3Runtime.defaults, seed: 0 }, 'first-frame.png', 'dependency-check', h3Runtime.tier);
             for (const node of Object.values(templateGraph))
                 if (!info[node.class_type])
                     issues.push('缺少节点：' + node.class_type);
             for (const node of Object.values(templateGraph))
                 for (const [key, value] of Object.entries(node.inputs)) {
-                    if (typeof value === 'string' && key.endsWith('_name') && key !== 'sampler_name') {
-                        const enumeration = info[node.class_type]?.input?.required?.[key]?.[0];
+                    if (typeof value === 'string' && ((key.endsWith('_name') && key !== 'sampler_name') || key === 'projection')) {
+                        const enumeration = (info[node.class_type]?.input?.required?.[key] ?? info[node.class_type]?.input?.optional?.[key])?.[0];
                         if (Array.isArray(enumeration) && !enumeration.includes(value))
                             issues.push('引擎未识别模型：' + value);
                     }
@@ -153,7 +170,7 @@ export async function createStudioService(options: {
         return snapshot.templates[0];
     }
     function connectWs() {
-        if (socket || disposed)
+        if (socket || disposed || closing)
             return;
         socket = new WebSocket(snapshot.settings.engineUrl.replace(/^http/, 'ws') + '/ws?clientId=' + clientId);
         socket.on('error', () => { });
@@ -275,7 +292,7 @@ export async function createStudioService(options: {
         return startFlight;
     }
     async function startImpl() {
-        if (disposed) throw new Error('启动器已关闭');
+        if (disposed || closing) throw new Error('启动器正在退出');
         if (startBusy)
             return snapshot.engine;
         await refresh();
@@ -286,14 +303,16 @@ export async function createStudioService(options: {
         if (child)
             return snapshot.engine;
         const root = snapshot.settings.installationPath;
+        await scan();
         const installation = await getEngineInstallation(root);
         for (const dir of [snapshot.settings.inputPath, snapshot.settings.outputPath, path.join(options.dataDir, 'comfy-user')])
             await fs.mkdir(dir, { recursive: true });
         startBusy = true;
+        if (closing) { startBusy = false; throw new Error('启动器正在退出'); }
         snapshot.engine.status = 'starting';
         snapshot.engine.message = '正在启动本地引擎';
         emit();
-        child = spawn(installation.python, [...installation.args, '--listen', '127.0.0.1', '--port', '8188', '--reserve-vram', '1.5', '--cache-none', '--input-directory', snapshot.settings.inputPath, '--output-directory', snapshot.settings.outputPath, '--user-directory', path.join(options.dataDir, 'comfy-user')], { cwd: installation.cwd, windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', HF_HOME: path.join(root, 'cache/huggingface'), PYTHONDONTWRITEBYTECODE: '1' } });
+        child = (options.spawnEngine ?? spawn)(installation.python, [...installation.args, ...h3Runtime.launchArgs, '--listen', '127.0.0.1', '--port', '8188', '--reserve-vram', h3Runtime.tier === 'lite' ? '0.5' : '1.5', '--cache-none', '--input-directory', snapshot.settings.inputPath, '--output-directory', snapshot.settings.outputPath, '--user-directory', path.join(options.dataDir, 'comfy-user')], { cwd: installation.cwd, windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', HF_HOME: path.join(root, 'cache/huggingface'), PYTHONDONTWRITEBYTECODE: '1' } });
         snapshot.engine.managed = true;
         snapshot.engine.pid = child.pid;
         child.stdout?.on('data', b => log('info', b.toString().trim().slice(-1000)));
@@ -339,7 +358,9 @@ export async function createStudioService(options: {
         return snapshot.engine;
     }
     async function submit(value: unknown) {
-        const params = validateGenerationParams(value);
+        if (closing) throw new Error('启动器正在退出，不能提交新任务');
+        await scan();
+        const params = validateGenerationParams(value, h3Runtime.defaults.steps);
         const image = params.mode === 'text' ? undefined : validateImage(params.image);
         await refresh();
         if (!['ready', 'busy'].includes(snapshot.engine.status))
@@ -365,8 +386,9 @@ export async function createStudioService(options: {
                     throw new Error('引擎返回了无效图片路径');
                 task.inputImage = [uploaded.subfolder, uploaded.name].filter(Boolean).join('/');
             }
+            if (closing) throw new Error('应用退出，提交已取消');
             promptSent = true;
-            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(params, task.inputImage ?? '', id), extra_data: { luckyx_task_id: id } });
+            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(params, task.inputImage ?? '', id, h3Runtime.tier), extra_data: { luckyx_task_id: id } });
             if (typeof result.prompt_id !== 'string')
                 throw new Error('引擎未确认任务编号');
             task.promptId = result.prompt_id;
@@ -404,11 +426,34 @@ export async function createStudioService(options: {
         await refresh();
         return structuredClone(snapshot.settings);
     }
+    async function connectBootstrapInstallation() {
+        await bootstrap.ready;
+        if (closing || disposed) throw new Error('启动器正在退出');
+        if (bootstrapFlight) throw new Error('安装仍在进行，请等待完成后连接');
+        const target = await bootstrap.completedInstallation();
+        const modelPath = path.join(target, 'ComfyUI/models');
+        if (path.resolve(snapshot.settings.installationPath) === path.resolve(target) && path.resolve(snapshot.settings.modelPath) === path.resolve(modelPath)) {
+            await scan();
+            if (snapshot.settings.initialized) { bootstrapConnectionError = undefined; return { connected: true, alreadyConnected: true }; }
+        }
+        await refresh();
+        if (child || startFlight || ['ready', 'busy'].includes(snapshot.engine.status) || snapshot.tasks.some(task => activeStatuses.includes(task.status))) throw new Error('请先停止现有引擎并完成任务，再连接已安装环境');
+        const previous = structuredClone(snapshot.settings);
+        snapshot.settings = { ...snapshot.settings, installationPath: target, modelPath, engineUrl: 'http://127.0.0.1:8188' };
+        socket?.close();
+        await scan();
+        try { await persist(); }
+        catch { snapshot.settings = previous; await scan(); throw new Error('环境已安装，但连接设置保存失败。请重试连接已安装环境'); }
+        bootstrapConnectionError = undefined;
+        emit();
+        return { connected: true, alreadyConnected: false };
+    }
     async function retry(payload: unknown) {
         const task = snapshot.tasks.find(t => t.id === (payload as any)?.id);
         if (!task || !['failed', 'interrupted'].includes(task.status))
             throw new Error('请选择失败或已取消的任务');
-        const params = validateGenerationParams(task.params);
+        await scan();
+        const params = validateGenerationParams(task.params, h3Runtime.defaults.steps);
         if (params.mode !== 'text' && !task.inputImage)
             throw new Error('请重新上传首帧图片后生成');
         await refresh();
@@ -421,7 +466,7 @@ export async function createStudioService(options: {
         snapshot.tasks.unshift(cloned);
         await persist();
         try {
-            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(params, task.inputImage ?? '', cloned.id), extra_data: { luckyx_task_id: cloned.id } });
+            const result = await post('/prompt', { client_id: clientId, prompt: buildWorkflow(params, task.inputImage ?? '', cloned.id, h3Runtime.tier), extra_data: { luckyx_task_id: cloned.id } });
             if (typeof result.prompt_id !== 'string')
                 throw new Error('引擎未确认任务编号');
             cloned.promptId = result.prompt_id;
@@ -558,23 +603,60 @@ export async function createStudioService(options: {
             return structuredClone(existing);
         return importWorkflow({ name: definition.name, json: JSON.stringify(definition.graph, null, 2) }, definition.id);
     }
+    function shutdown(): Promise<void> {
+        if (shutdownFlight) return shutdownFlight;
+        closing = true;
+        shutdownFlight = (async () => {
+            clearInterval(timer);
+            socket?.close();
+            shutdownController.abort();
+            bootstrap.cancel();
+            const ownedChild = child;
+            if (ownedChild && child === ownedChild && ownedChild.exitCode === null && ownedChild.signalCode === null) {
+                const exit = new Promise<void>(resolve => { ownedChild.once('exit', () => resolve()); ownedChild.once('error', () => resolve()); });
+                if (options.terminateEngine) await options.terminateEngine(ownedChild);
+                else if (process.platform === 'win32' && Number.isSafeInteger(ownedChild.pid) && ownedChild.pid! > 0) {
+                    await promisify(execFile)('taskkill.exe', ['/PID', String(ownedChild.pid), '/T', '/F'], { windowsHide: true, timeout: 3000 }).catch(() => { ownedChild.kill(); });
+                } else ownedChild.kill();
+                await Promise.race([exit, new Promise<void>(resolve => { const deadline = setTimeout(resolve, 4000); deadline.unref(); })]);
+            }
+            await bootstrap.dispose();
+            await bootstrapFlight?.catch(() => {});
+            await startFlight?.catch(() => {});
+            await submitChain;
+            if (ownedChild) {
+                for (const task of snapshot.tasks.filter(task => activeStatuses.includes(task.status))) {
+                    task.status = 'interrupted'; task.stage = '应用退出，任务已中断'; task.updatedAt = new Date().toISOString();
+                }
+                await persist();
+            }
+            await writes;
+        })();
+        return shutdownFlight;
+    }
     const service: StudioService = {
         async invoke(command, payload) {
             if (disposed)
                 throw new Error('启动器已关闭');
+            if (closing && !['lifecycle.shutdown', 'snapshot', 'bootstrap.status'].includes(command)) throw new Error('启动器正在退出');
             switch (command) {
-                case 'bootstrap.status': return { ...bootstrap.snapshot(), ...(bootstrapConnectionError ? { error: bootstrapConnectionError } : {}) };
+                case 'lifecycle.shutdown': await shutdown(); return { stopped: true };
+                case 'bootstrap.status': await bootstrap.ready; bootstrapPlan ??= bootstrap.snapshot().plan; return { ...bootstrap.snapshot(), ...(bootstrapConnectionError ? { error: bootstrapConnectionError } : {}) };
                 case 'bootstrap.plan': {
                     if (bootstrapFlight) throw new Error('安装正在进行');
                     const p = payload as { rootPath?: unknown; profile?: unknown } | null;
                     if (typeof p?.rootPath !== 'string' || (p.profile !== undefined && !['environment', 'h3'].includes(String(p.profile)))) throw new Error('请选择安装目录和安装内容');
                     bootstrapPlan = undefined;
+                    await hardwareReady;
                     bootstrapPlan = await bootstrap.plan({ rootPath: p.rootPath, hardware: snapshot.hardware, ...{ profile: (p.profile ?? 'h3') as 'environment' | 'h3' } });
                     bootstrapConnectionError = undefined;
                     return bootstrapPlan;
                 }
                 case 'bootstrap.cancel': return bootstrap.cancel();
+                case 'bootstrap.connect': return connectBootstrapInstallation();
                 case 'bootstrap.start': {
+                    await bootstrap.ready;
+                    bootstrapPlan ??= bootstrap.snapshot().plan;
                     if (bootstrapFlight) return { started: true };
                     if (!bootstrapPlan) throw new Error('请先检查安装条件');
                     await refresh();
@@ -586,9 +668,11 @@ export async function createStudioService(options: {
                         if (result.status !== 'completed' || !result.installationPath || disposed) return;
                         snapshot.settings = { ...snapshot.settings, installationPath: result.installationPath, modelPath: path.join(result.installationPath, 'ComfyUI/models'), engineUrl: 'http://127.0.0.1:8188' };
                         await scan(); await persist();
+                        if (closing) return;
                         await start();
                         const deadline = Date.now() + 90000;
-                        while (!disposed && Date.now() < deadline && child && !['ready', 'busy'].includes(snapshot.engine.status)) { await new Promise(resolve => setTimeout(resolve, 1000)); await refresh(); }
+                        while (!disposed && !closing && Date.now() < deadline && child && !['ready', 'busy'].includes(snapshot.engine.status)) { await new Promise(resolve => setTimeout(resolve, 1000)); await refresh(); }
+                        if (closing) return;
                         if (!['ready', 'busy'].includes(snapshot.engine.status)) throw new Error('文件已安装，但引擎未就绪。请查看启动日志或使用手动教程。');
                         if (plan.files.some(f => f.kind === 'model')) { await validate(); if (!snapshot.templates[0].ready) throw new Error('文件已安装，但 H3 节点检查未通过。请在资源中心查看缺失项和官方教程。'); }
                         log('info', '一键安装完成，已连接本地 ComfyUI');
@@ -670,7 +754,8 @@ export async function createStudioService(options: {
                 case 'tasks.refresh': return refresh();
                 case 'preset.save': {
                     const p = payload as any;
-                    const params = validateGenerationParams(p?.params);
+                    await scan();
+                    const params = validateGenerationParams(p?.params, h3Runtime.defaults.steps);
                     if (typeof p.name !== 'string' || !p.name.trim() || p.name.length > 60)
                         throw new Error('预设名称须为 1–60 字符');
                     const preset = { id: randomUUID(), name: p.name.trim(), params: { ...params, image: undefined } };
@@ -701,13 +786,18 @@ export async function createStudioService(options: {
             const query = new URLSearchParams({ filename: output.filename, subfolder: output.subfolder, type: 'output' });
             return { url: snapshot.settings.engineUrl + '/view?' + query, filename: output.filename };
         },
-        async dispose() { disposed = true; clearInterval(timer); socket?.close(); listeners.clear(); await bootstrap.dispose(); await bootstrapFlight; await writes; db.close(); }
+        async dispose() { if (disposed) return; await shutdown(); if (disposed) return; disposed = true; listeners.clear(); db.close(); }
     };
     const timer = setInterval(() => { void refresh().catch(() => { }); }, 2500);
     timer.unref();
     await scan();
     await persist();
     await refresh();
-    void promisify(execFile)('nvidia-smi', ['--query-gpu=name,memory.total,driver_version', '--format=csv,noheader,nounits'], { windowsHide: true, timeout: 5000 }).then(({ stdout }) => { const [gpuName, vram, driver] = stdout.trim().split('\n')[0].split(',').map(s => s.trim()); snapshot.hardware = { ...snapshot.hardware, gpuName, vramMb: Number(vram) || 0, driver }; emit(); }).catch(() => { snapshot.hardware.gpuName = '未检测到 NVIDIA 显卡'; emit(); });
+    await bootstrap.ready;
+    if (!snapshot.settings.initialized && bootstrap.snapshot().status === 'completed') {
+        try { await connectBootstrapInstallation(); }
+        catch (error: any) { bootstrapConnectionError = error.message ?? '已安装环境的连接设置尚未恢复，请重试连接'; log('warn', bootstrapConnectionError!); }
+    }
+
     return service;
 }

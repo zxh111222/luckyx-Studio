@@ -10,8 +10,21 @@ export interface BootstrapFile {
     url: string;
     sizeBytes: number;
     sha256: string;
-    kind: 'environment' | 'model';
+    kind: 'environment' | 'model' | 'node';
     relativePath: string;
+    archiveRoot?: string;
+}
+export type H3InstallationTier = 'lite' | 'balanced' | 'standard' | 'environment';
+export interface H3InstallationRecommendation {
+    tier: H3InstallationTier;
+    label: string;
+    source: 'official' | 'community';
+    reason: string;
+    warnings: string[];
+    modelNames: string[];
+    requiredNodes: string[];
+    launchArgs: string[];
+    defaults: { width: number; height: number; frames: number; steps: number; fps: number; audio: boolean };
 }
 export interface BootstrapPlan {
     profile: 'environment' | 'h3';
@@ -23,6 +36,7 @@ export interface BootstrapPlan {
     requiredFreeBytes: number;
     freeBytes: number;
     hardwareIssues: string[];
+    recommendation: H3InstallationRecommendation;
     files: BootstrapFile[];
     tutorialUrl: string;
 }
@@ -38,4 +52,6 @@ export interface BootstrapState {
     installationPath?: string;
     error?: string;
     tutorialUrl: string;
+    plan?: BootstrapPlan;
+    resumable?: boolean;
 }

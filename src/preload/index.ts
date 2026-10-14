@@ -12,5 +12,10 @@ contextBridge.exposeInMainWorld('luckyx', {
     ipcRenderer.on('studio:snapshot', listener)
     return () => ipcRenderer.removeListener('studio:snapshot', listener)
   },
+  onCloseRequested(callback: (value: unknown) => void) {
+    const listener = (_event: unknown, value: unknown) => callback(value)
+    ipcRenderer.on('studio:close-requested', listener)
+    return () => ipcRenderer.removeListener('studio:close-requested', listener)
+  },
   windowControl(action: string) { ipcRenderer.send('studio:window', action) }
 })

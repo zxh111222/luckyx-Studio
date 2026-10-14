@@ -10,7 +10,7 @@ test('硬件容量未知或无效时全部标为信息不足，不硬推荐',()=
  for(const [vram,ram] of [[0,32],[16376,0],[-1,32],[NaN,32],[16376,Infinity]]) assert.ok(rankModelRecommendations(vram,ram).every(m=>m.level==='unknown'));
 });
 test('8GB档位仅给offload路线有条件试用，不把Wan1.3B视为8GB保证',()=>{
- const models=byId(8192,32);assert.equal(models['wan22-ti2v-5b'].level,'conditional');assert.equal(models['minimax-h3-existing'].level,'not-recommended');assert.equal(models['wan21-t2v-13b'].level,'not-recommended');
+ const models=byId(8192,32);assert.equal(models['wan22-ti2v-5b'].level,'conditional');assert.equal(models['minimax-h3-existing'].level,'conditional');assert.equal(models['wan21-t2v-13b'].level,'not-recommended');
 });
 test('24GB/64GB档位具备推荐容量，但不改变模板支持范围',()=>{
  const models=rankModelRecommendations(24576,64);assert.ok(models.every(m=>m.level==='recommended'));assert.ok(models.every(m=>typeof m.levelLabel==='string'&&m.levelLabel.trim().length>0));
@@ -26,6 +26,15 @@ test('模型清单完整且参考链接均通过官方HTTPS校验',()=>{
 });
 test('推荐计算不改变原始清单或把建议变成可运行模板',()=>{
  const before=JSON.stringify(modelRecommendations);rankModelRecommendations(24576,64);rankModelRecommendations(8192,16);assert.equal(JSON.stringify(modelRecommendations),before);
+});
+test('H3推荐与安装器共用配置选择，8GB Lite不宣称音频且清单匹配4B',()=>{
+ const low=rankModelRecommendations(8192,16,'NVIDIA GeForce RTX 4060').find(m=>m.id==='minimax-h3-existing')!;
+ assert.equal(low.level,'conditional');assert.equal(low.source,'community');assert.match(low.purpose,/无音频/);assert.equal(low.downloads.length,4);
+ assert.ok(low.downloads.some(f=>f.folder==='clip_projections'&&f.name.includes('4b')));assert.ok(!low.downloads.some(f=>f.name.includes('32b')||f.name.includes('audio')));
+ for(const url of [low.tutorialUrl,...low.downloads.map(f=>f.url)])validateReferenceUrl(url);
+ const mid=byId(16376,31)['minimax-h3-existing'];assert.match(mid.name,/W6A8/);assert.ok(mid.downloads.some(f=>f.name==='minimax_h3_fl2va_pruned_w6a8.safetensors'));
+ const high=byId(24576,64)['minimax-h3-existing'];assert.match(high.name,/INT8/);
+ for(const [vram,ram,gpu] of [[6144,32,'NVIDIA GeForce RTX 3060'],[8192,8,'NVIDIA GeForce RTX 4060'],[24576,64,'AMD Radeon RX 7900']] as const)assert.equal(rankModelRecommendations(vram,ram,gpu).find(m=>m.id==='minimax-h3-existing')!.level,'not-recommended');
 });
 test('两张新增配图为可解码WebP，单张不超过200KB',async()=>{
  for(const name of ['camera-studio.webp','coast-inspiration.webp']){

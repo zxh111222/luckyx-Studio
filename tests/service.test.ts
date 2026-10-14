@@ -7,6 +7,10 @@ import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createStudioService } from '../src/backend/service';
 import graph from '../src/backend/workflows/h3-i2v.json';
+import liteGraph from '../src/backend/workflows/h3-lite.json';
+import { h3ModelSpecs, h3TierDefaults } from '../src/shared/h3-installation';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import type { Snapshot, TaskRecord, GenerationParams, StudioService } from '../src/shared/contracts';
 import { canRemoveTask } from '../src/shared/task-policy';
 const base:GenerationParams={templateId:'h3-i2v',prompt:'测试镜头',width:864,height:480,frames:124,steps:4,seed:123,image:{name:'first.png',dataBase64:Buffer.from([137,80,78,71,13,10,26,10,0]).toString('base64')}};
@@ -163,4 +167,29 @@ test('失败及取消历史可删除；活动或结果待确认的任务不可�
  f.state.running=[];await f.service.invoke('tasks.refresh');assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks[0].status,'unknown');await assert.rejects(f.service.invoke('task.remove',{id:queued.id}),/只能删除/);
  f.state.history[queued.promptId!]={status:{completed:true,status_str:'error',messages:[['execution_interrupted',{}]]},outputs:{}};await f.service.invoke('tasks.refresh');await f.service.invoke('task.remove',{id:queued.id});
  f.state.failPrompt=true;const failed=await f.service.invoke('task.submit',base) as TaskRecord;assert.equal(failed.status,'failed');await f.service.invoke('task.remove',{id:failed.id});assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks.length,0);
+});
+test('Lite服务按安装标识扫正确四权重和投影节点，提交20步无音频文生图不上传图片',async t=>{
+ const f=await fixture(t);await fs.writeFile(path.join(f.installationPath,'luckyx-managed.json'),JSON.stringify({app:'luckyx. Studio',installationTier:'lite'}));
+ for(const [folder,name] of h3ModelSpecs('lite')){await fs.mkdir(path.join(f.modelPath,folder),{recursive:true});await fs.writeFile(path.join(f.modelPath,folder,name),'test-model');}
+ f.state.info=Object.fromEntries(Object.values(liteGraph).map(node=>[node.class_type,{input:{required:{}}}]));
+ f.state.info.ClipProjApply={input:{required:{projection:[[h3ModelSpecs('lite')[3][1]]]}}};
+ const template=await f.service.invoke('template.validate') as Snapshot['templates'][number];assert.equal(template.ready,true);assert.equal(template.audio,false);assert.equal(template.defaultSteps,20);assert.equal(template.installationTier,'lite');
+ const task=await f.service.invoke('task.submit',{...base,...h3TierDefaults('lite'),mode:'text',image:undefined}) as TaskRecord;assert.equal(task.status,'queued');
+ const sent=f.state.calls.find(call=>call.url==='/prompt')!.body.prompt;assert.equal(sent['20'].class_type,'SpectrumApplyMiniMaxH3');assert.equal(sent['10'].inputs.steps,20);assert.equal(sent['14'].inputs.audio,undefined);assert.equal(f.state.calls.filter(call=>call.url==='/upload/image').length,0);
+ delete f.state.info.ClipProjApply;await assert.rejects(f.service.invoke('task.submit',{...base,...h3TierDefaults('lite'),mode:'text',image:undefined}),/缺少节点.*ClipProjApply/);
+ f.state.info.ClipProjApply={input:{required:{projection:[['wrong-8b-projection.safetensors']]}}};await assert.rejects(f.service.invoke('task.submit',{...base,...h3TierDefaults('lite'),mode:'text',image:undefined}),/引擎未识别模型.*ClipProj/);
+ assert.equal(f.state.calls.filter(call=>call.url==='/prompt').length,1);
+});
+test('退出幂等阻止新任务，不停止外部引擎或删除外部队列，保留已提交记录',async t=>{
+ const f=await fixture(t);const task=await f.service.invoke('task.submit',base) as TaskRecord;const before=f.state.calls.length;
+ assert.deepEqual(await f.service.invoke('lifecycle.shutdown'),{stopped:true});assert.deepEqual(await f.service.invoke('lifecycle.shutdown'),{stopped:true});
+ assert.ok(!f.state.calls.slice(before).some(call=>call.url==='/interrupt'||call.url==='/queue'&&call.body));assert.ok(f.state.pending.some(entry=>entry[1]===task.promptId));
+ assert.equal((await f.service.invoke('snapshot') as Snapshot).tasks[0].status,'queued');await assert.rejects(f.service.invoke('task.submit',base),/退出/);await assert.rejects(f.service.invoke('engine.start'),/退出/);
+});
+test('自管引擎退出只结束持有的child，幂等阻止新启动',async t=>{
+ const f=await fixture(t);await f.service.dispose();f.state.invalidStats=true;
+ const processEvents=new EventEmitter();const child=Object.assign(processEvents,{pid:12345,exitCode:null,signalCode:null,stdout:new EventEmitter(),stderr:new EventEmitter(),kill(){processEvents.emit('exit',0);return true;}}) as unknown as ChildProcess;
+ let spawned=0,killed=0;const managed=await createStudioService({dataDir:path.join(f.dir,'data'),defaultInstallationPath:f.installationPath,spawnEngine:((..._args:any[])=>{spawned++;return child;}) as any,terminateEngine:async candidate=>{assert.equal(candidate,child);killed++;candidate.kill();}});f.replace(managed);
+ await managed.invoke('settings.save',{engineUrl:'http://127.0.0.1:8188'});await managed.invoke('engine.start');assert.equal(spawned,1);assert.equal((await managed.invoke('snapshot') as Snapshot).engine.managed,true);
+ await managed.invoke('lifecycle.shutdown');assert.equal(killed,1);await managed.invoke('lifecycle.shutdown');assert.equal(killed,1);await assert.rejects(managed.invoke('engine.start'),/退出/);
 });
