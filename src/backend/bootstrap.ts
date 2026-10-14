@@ -7,6 +7,7 @@ import { recommendH3Installation, h3TierDefaults, h3TierLaunchArgs, H3_LITE_NODE
 import { getPinnedH3Files, isPinnedCommunityDownload } from './h3-downloads';
 import { selectCudaRuntime } from '../shared/cuda-runtime';
 import { getPinnedEnvironmentFile, environmentCachePaths, CUDA_GPU_PROBE_SCRIPT, validateGpuProbe } from './cuda-runtime';
+import { publishEnvironmentDirectory, EnvironmentPublishError } from './publish-environment';
 const GiB = 1024 ** 3;
 const tutorialUrl = 'https://docs.comfy.org/installation/manual_install';
 const downloadAttempts = 4;
@@ -35,6 +36,7 @@ export interface BootstrapOptions {
     getFreeBytes?: (directory: string) => Promise<number>;
     getModelFiles?: typeof getPinnedH3Files;
     getHardware?: () => Promise<BootstrapHardware>;
+    renameEnvironmentDirectory?: typeof fs.rename;
 }
 export function assertOfficialDownloadUrl(value: string): string {
     let url: URL;
@@ -188,20 +190,22 @@ export async function getPortableLaunchPlan(installationPath: string): Promise<{
     }
     return { python, args: ['-s', main, '--windows-standalone-build'], cwd: installationPath };
 }
-async function defaultRunner(exe: string, args: string[], options: {
+export async function defaultRunner(exe: string, args: string[], options: {
     signal: AbortSignal;
     cwd?: string;
-}): Promise<BootstrapRunResult> {
+}, spawnProcess: typeof spawn = spawn): Promise<BootstrapRunResult> {
     return new Promise((resolve, reject) => {
-        const child = spawn(exe, args, { cwd: options.cwd, windowsHide: true, signal: options.signal });
-        let stdout = '', stderr = '';
+        const child = spawnProcess(exe, args, { cwd: options.cwd, windowsHide: true, signal: options.signal });
+        let stdout = '', stderr = '', failure: Error | undefined;
         child.stdout.on('data', chunk => { stdout += chunk.toString(); if (stdout.length > 32 * 1024 * 1024) {
+            failure ??= new Error('解压清单过大');
             child.kill();
-            reject(new Error('解压清单过大'));
         } });
         child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-2000); });
-        child.on('error', reject);
-        child.on('exit', code => code === 0 ? resolve({ stdout }) : reject(new Error('环境检查或解压失败，请查看官方教程（退出代码 ' + code + '）')));
+        child.on('error', error => { failure ??= error; });
+        // exit precedes closed pipes and can leave the just-probed directory in
+        // use on Windows. Wait for close before the next install step or rename.
+        child.on('close', code => failure ? reject(failure) : code === 0 ? resolve({ stdout }) : reject(new Error('环境检查或解压失败，请查看官方教程（退出代码 ' + code + '）')));
     });
 }
 export function createBootstrapManager(options: BootstrapOptions) {
@@ -533,13 +537,15 @@ export function createBootstrapManager(options: BootstrapOptions) {
             await probeGpuRuntime(true);
             signal.throwIfAborted();
             await fs.writeFile(path.join(portable, 'luckyx-managed.json'), JSON.stringify({ app: 'luckyx. Studio', version: trusted.version, runtimeId: trusted.runtime!.id, installationTier: trusted.recommendation.tier, defaults: trusted.recommendation.defaults, models: trusted.files.filter(file => file.kind === 'model').map(file => ({ name: file.name, sha256: file.sha256 })), nodes: trusted.files.filter(file => file.kind === 'node').map(file => ({ name: file.name, sha256: file.sha256, url: file.url })) }));
-            if (await exists(trusted.targetPath))
-                throw new Error('安装目标已出现，不会覆盖任何现有目录');
-            await fs.rename(portable, trusted.targetPath);
+            publish({ status: 'verifying', phase: '完成环境配置', message: '下载和校验已完成，正在配置最终运行环境目录', currentFile: undefined });
+            await publishEnvironmentDirectory(portable, trusted.targetPath, {
+                signal, rename: options.renameEnvironmentDirectory,
+                onRetry: (next, total) => publish({ phase: '完成环境配置', message: `环境目录暂时被占用，正在尝试第 ${next} / ${total} 次配置；已下载的模型会保留`, currentFile: undefined })
+            });
             publish({ status: 'completed', phase: '安装完成', message: trusted.profile === 'h3' ? '环境和模型完整性通过；请启动后检查节点并进行首次试跑' : '基础环境完整性通过；请启动检查节点，H3 模型未下载', installationPath: trusted.targetPath, receivedBytes: trusted.downloadBytes });
         }
         catch (error: any) {
-            publish({ status: signal.aborted ? 'cancelled' : 'error', phase: signal.aborted ? '已取消安装' : '安装未完成', message: signal.aborted ? '已保留下载进度，可重新检查后继续安装' : error.message, error: signal.aborted ? undefined : error.message, resumable: signal.aborted || !await exists(trusted.targetPath) });
+            publish({ status: signal.aborted ? 'cancelled' : 'error', phase: signal.aborted ? '已取消安装' : error instanceof EnvironmentPublishError ? '文件已准备，目录配置未完成' : '安装未完成', message: signal.aborted ? '已保留下载进度，可重新检查后继续安装' : error.message, error: signal.aborted ? undefined : error.message, ...(error instanceof EnvironmentPublishError ? { currentFile: undefined } : {}), resumable: signal.aborted || !await exists(trusted.targetPath) });
         }
         return structuredClone(state);
     }

@@ -22,7 +22,7 @@ const digest = (data:Buffer) => createHash('sha256').update(data).digest('hex');
 const officialUrl = 'https://github.com/Comfy-Org/ComfyUI/releases/download/v0.39.0/ComfyUI_windows_portable_nvidia.7z';
 const hardware = { gpuName:'NVIDIA GeForce RTX 4080',vramMb:16384,ramGb:32,driver:'580.88',cudaVersion:'13.0' };
 const names = ['diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors','text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors','vae/minimax_h3_video_vae_int8_convrot.safetensors','vae/minimax_h3_audio_vae_fp32.safetensors','loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors'];
-async function fixture(t:any, overrides:{body?:(url:string,init?:RequestInit)=>Promise<Response>,free?:()=>number,cuda?:boolean,computed?:boolean,probeCuda?:string,probeError?:boolean,unsafeListing?:boolean,getHardware?:()=>BootstrapHardware}={}) {
+async function fixture(t:any, overrides:{body?:(url:string,init?:RequestInit)=>Promise<Response>,free?:()=>number,cuda?:boolean,computed?:boolean,probeCuda?:string,probeError?:boolean,unsafeListing?:boolean,getHardware?:()=>BootstrapHardware,renameEnvironmentDirectory?:typeof fs.rename}={}) {
  const root=await temporary(t);const requests:Array<{url:string,range:string|null}>=[];const runs:string[][]=[];
  const fetcher = async (input:any,init?:RequestInit) => {
   const url=String(input);requests.push({url,range:new Headers(init?.headers).get('range')});
@@ -31,7 +31,7 @@ async function fixture(t:any, overrides:{body?:(url:string,init?:RequestInit)=>P
   return overrides.body ? overrides.body(url,init) : new Response(archive);
  };
  const modelFiles=(tier:Parameters<typeof getPinnedH3Files>[0])=>getPinnedH3Files(tier).map(file=>({...file,sizeBytes:archive.length,sha256:digest(archive)}));
- const options={dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,getModelFiles:modelFiles,getHardware:async()=>overrides.getHardware?.()??hardware,
+ const options={dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,getModelFiles:modelFiles,getHardware:async()=>overrides.getHardware?.()??hardware,renameEnvironmentDirectory:overrides.renameEnvironmentDirectory,
   runner:async(exe:string,args:string[])=>{runs.push([exe,...args]);const node=getPinnedH3Files('lite').find(file=>file.kind==='node'&&args.includes(path.join(root,'.luckyx-bootstrap/nodes',file.name)));
    if(args[0]==='l')return{stdout:overrides.unsafeListing?'Path = ../escape':node?'----------\nPath = '+node.archiveRoot+'/__init__.py':'----------\nPath = ComfyUI_windows_portable/python_embeded/python.exe\nPath = ComfyUI_windows_portable/ComfyUI/main.py'};
    if(args[0]==='x'){const extracted=args.find(a=>a.startsWith('-o'))!.slice(2);if(node)await put(extracted,node.archiveRoot+'/__init__.py');else{await put(extracted,'ComfyUI_windows_portable/python_embeded/python.exe');await put(extracted,'ComfyUI_windows_portable/ComfyUI/main.py');}return{stdout:''};}
@@ -236,6 +236,18 @@ test('计划缓存仅计选中runtime资源和有限大小片段，不计其他r
  let replanned=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});assert.equal(replanned.cachedBytes,0);assert.equal(f.manager.snapshot().receivedBytes,0);
  await put(f.root,'.luckyx-bootstrap/portable-cu126.7z.part','part');replanned=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});assert.equal(replanned.cachedBytes,4);assert.equal(f.manager.snapshot().receivedBytes,4);
  await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable-cu126.7z.part'),Buffer.alloc(archive.length+100));replanned=await f.manager.plan({rootPath:f.root,hardware:legacy,profile:'environment'});assert.equal(replanned.cachedBytes,archive.length);assert.ok(replanned.cachedBytes!<=replanned.downloadBytes);
+});
+
+test('全模型下载后目录EPERM会自动重试，配置成功时不误显示正在下载单个模型',async t=>{
+ let attempts=0;const f=await fixture(t,{renameEnvironmentDirectory:async(source,target)=>{if(++attempts===1)throw Object.assign(new Error('rename busy'),{code:'EPERM'});await fs.rename(source,target);}});const p=await f.manager.plan({rootPath:f.root,hardware});const messages:string[]=[];f.manager.subscribe(s=>{if(s.phase==='完成环境配置'){assert.equal(s.currentFile,undefined);messages.push(s.message);}});
+ const state=await f.manager.start(p);assert.equal(state.status,'completed');assert.equal(attempts,2);assert.ok(messages.some(message=>message.includes('第 2 / 6 次配置')));assert.equal(state.currentFile,undefined);assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(f.requests.filter(r=>r.url.includes('/resolve/')).length,5);
+});
+
+test('全部文件下载后目录权限错误保留模型，关闭占用再继续只配置不重新下载',async t=>{
+ let locked=true,attempts=0;const f=await fixture(t,{renameEnvironmentDirectory:async(source,target)=>{attempts++;if(locked)throw Object.assign(new Error('EPERM raw model path'),{code:'EACCES'});await fs.rename(source,target);}});const p=await f.manager.plan({rootPath:f.root,hardware});let state=await f.manager.start(p);
+ assert.equal(state.status,'error');assert.equal(state.phase,'文件已准备，目录配置未完成');assert.equal(state.currentFile,undefined);assert.match(state.error!,/占用.*权限.*保留全部下载和模型.*继续配置环境/);assert.doesNotMatch(state.error!,/raw model path|CUDA|驱动/);assert.equal(state.resumable,true);assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(attempts,6);
+ for(const file of p.files.filter(file=>file.kind==='model'))assert.equal(digest(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable',file.relativePath))),file.sha256);
+ locked=false;const resumed=await f.manager.plan({rootPath:f.root,hardware});assert.equal(resumed.cachedBytes,p.downloadBytes);const before=f.requests.length;state=await f.manager.start(resumed);assert.equal(state.status,'completed');assert.equal(f.requests.length,before);assert.equal(attempts,7);assert.equal(state.receivedBytes,p.downloadBytes);
 });
 
 test('最终GPU检查失败保留全量下载，但不继续显示最后一个模型文件作为故障对象',async t=>{
