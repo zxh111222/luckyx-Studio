@@ -208,6 +208,48 @@ test('实际安装组件明确3070旧驱动与CUDA12.3，保留缓存并链接�
   } finally { mounted.app.unmount(); nativeDesktop = false; nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
 })
 
+test('最终目录配置失败时实际界面只说明一次，并保留继续配置入口而非重下载', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] }); stubCustomRendererDomClasses(t)
+  const hardware = { gpuName: 'NVIDIA GeForce RTX 4060', vramMb: 8192, ramGb: 32, driver: '582.01', cudaVersion: '13.0' }
+  const state = cachedBootstrapState(hardware)
+  state.phase = '环境配置待继续'
+  state.message = '环境文件夹暂时被程序占用，已保留全部下载和模型；请关闭使用此目录的程序后继续配置环境。'
+  state.error = state.message
+  nativeDesktop = true
+  const mounted = mountedBootstrap(state, hardware)
+  try {
+    await Promise.resolve(); await Vue.nextTick()
+    const text = mounted.text()
+    assert.equal(text.split(state.message).length - 1, 1)
+    assert.match(text, /环境配置待继续/); assert.match(text, /无需重新下载完整模型/)
+    const progress = mounted.nodes().find(node => node.props.class === 'install-progress')
+    assert.ok(progress)
+    assert.doesNotMatch(mounted.buttonText(progress), /当前文件：|minimax_h3_fl2va/)
+    assert.ok(mounted.buttons().some(button => mounted.buttonText(button) === '继续配置环境'))
+    assert.ok(!mounted.buttons().some(button => mounted.buttonText(button) === '继续下载并安装'))
+    assert.deepEqual(mounted.calls, ['bootstrap.status'])
+  } finally { mounted.app.unmount(); nativeDesktop = false; nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
+})
+
+test('最终目录配置正在重试时实际界面显示配置反馈并禁止重复开始', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] }); stubCustomRendererDomClasses(t)
+  const hardware = { gpuName: 'NVIDIA GeForce RTX 4060', vramMb: 8192, ramGb: 32, driver: '582.01', cudaVersion: '13.0' }
+  const state = cachedBootstrapState(hardware)
+  state.status = 'verifying'; state.phase = '完成环境配置'
+  state.message = '环境目录暂时被占用，正在自动重试（2 / 6）；已下载的模型会保留'
+  const mounted = mountedBootstrap(state, hardware)
+  try {
+    await Promise.resolve(); await Vue.nextTick()
+    const text = mounted.text()
+    assert.match(text, /完成环境配置/); assert.match(text, /正在自动重试（2 \/ 6）/)
+    const progress = mounted.nodes().find(node => node.props.class === 'install-progress')
+    assert.ok(progress); assert.doesNotMatch(mounted.buttonText(progress), /当前文件：|minimax_h3_fl2va/)
+    assert.ok(mounted.buttons().some(button => mounted.buttonText(button) === '暂停安装'))
+    assert.ok(!mounted.buttons().some(button => ['继续配置环境', '继续下载并安装', '一键安装并配置'].includes(mounted.buttonText(button))))
+    assert.deepEqual(mounted.calls, ['bootstrap.status'])
+  } finally { mounted.app.unmount(); nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
+})
+
 test('安装实际组件轮询后错误说明只显示一次，总进度与当前文件区别明确', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] })
   const state: BootstrapState = { status: 'error', phase: '安装未完成', message: '下载连接中断，请继续安装。', error: '下载连接中断，请继续安装。', receivedBytes: 1.9 * 1024 ** 3, totalBytes: 21.6 * 1024 ** 3, completedFiles: 1, currentFile: 'minimax_h3_fl2va_pruned_w4a8_mixed.safetensors', tutorialUrl: 'https://docs.comfy.org', resumable: true }
