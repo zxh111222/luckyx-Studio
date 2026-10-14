@@ -88,13 +88,14 @@ function uiNode(tag: string, text = ''): UiNode {
     get options() { return this.children.filter(child => child.tag === 'option') },
     addEventListener() {}, removeEventListener() {}, getRootNode: () => null }
 }
-function mountedBootstrap(state: BootstrapState, hardware?: Snapshot['hardware']) {
+function mountedBootstrap(state: BootstrapState, hardware?: Snapshot['hardware'], extraInvoke?: (command: string, payload?: unknown) => Promise<unknown>) {
   const calls: string[] = []
   const actions: Array<{ command: string; payload?: unknown }> = []
   nativeInvoke = async (command, payload) => {
     calls.push(command)
     if (command === 'bootstrap.status') return state
     if (command === 'native.openReference') { actions.push({ command, payload }); return }
+    if (extraInvoke) return extraInvoke(command, payload)
     throw new Error(`组件触发了测试范围外的操作：${command}`)
   }
   const renderer = Vue.createRenderer<UiNode, UiNode>({
@@ -152,6 +153,37 @@ function cachedBootstrapState(hardware: Snapshot['hardware'], fullProgress = tru
   }
   return { status: 'error', phase: '环境配置待完成', message: '下载文件已保存，等待 GPU 检查。', receivedBytes: fullProgress ? plan.downloadBytes : 0, totalBytes: fullProgress ? plan.downloadBytes : 0, completedFiles: 1, plan, resumable: true, tutorialUrl: plan.tutorialUrl }
 }
+
+test('安装页把Lite音画档位原样传给清单规划，并明确实验音频开销', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] }); stubCustomRendererDomClasses(t)
+  const hardware = { gpuName: 'NVIDIA GeForce RTX 4060', vramMb: 8192, ramGb: 32, driver: '582.01', cudaVersion: '13.0' }
+  const idle: BootstrapState = { status: 'idle', phase: '', message: '', receivedBytes: 0, totalBytes: 0, completedFiles: 0, resumable: false, tutorialUrl: 'https://docs.comfy.org' }
+  const planActions: Array<{ command: string; payload?: unknown }> = []
+  nativeDesktop = true
+  const planInvoke = async (command: string, payload?: unknown) => {
+    planActions.push({ command, payload })
+    if (command === 'bootstrap.plan') {
+      assert.deepEqual(payload, { rootPath: 'D:\\AI', profile: 'h3-lite-audio' })
+      const recommendation = recommendH3Installation(hardware, 'h3-lite-audio').recommendation
+      return { id: 'audio-plan', version: 'v0.39.0', profile: 'h3-lite-audio', rootPath: 'D:\\AI', targetPath: 'D:\\AI\\luckyx-environment', downloadBytes: 1, requiredFreeBytes: 2, freeBytes: 3, cachedBytes: 0, hardwareIssues: [], recommendation, files: [], tutorialUrl: 'https://docs.comfy.org', runtime: selectCudaRuntime(hardware).runtime } satisfies BootstrapPlan
+    }
+    throw new Error(`组件触发了测试范围外的操作：${command}`)
+  }
+  const mounted = mountedBootstrap(idle, hardware, planInvoke)
+  try {
+    await Promise.resolve(); await Vue.nextTick()
+    const profile = mounted.nodes().find(node => node.tag === 'select' && node.props.id === 'bootstrap-profile')
+    assert.ok(profile); assert.ok(profile.options.some(option => option.props.value === 'h3-lite-audio' && mounted.buttonText(option).includes('音画')))
+    ;(profile.props['onUpdate:modelValue'] as (value: string) => void)('h3-lite-audio')
+    await (profile.props.onChange as () => void)(); await Vue.nextTick()
+    const rootInput = mounted.nodes().find(node => node.tag === 'input' && node.props.id === 'bootstrap-root')
+    assert.ok(rootInput); (rootInput.props['onUpdate:modelValue'] as (value: string) => void)('D:\\AI'); await (rootInput.props.onInput as () => void)(); await Vue.nextTick()
+    const prepare = mounted.buttons().find(button => mounted.buttonText(button).includes('检查配置与下载量'))
+    assert.ok(prepare); await (prepare.props.onClick as () => Promise<void>)(); await Vue.nextTick()
+    assert.ok(planActions.some(action => action.command === 'bootstrap.plan' && (action.payload as { profile?: string }).profile === 'h3-lite-audio'))
+    assert.match(mounted.text(), /Lite 音画版/); assert.match(mounted.text(), /视频 \+ 音频/); assert.match(mounted.text(), /实验|稳定/)
+  } finally { mounted.app.unmount(); nativeDesktop = false; nativeInvoke = async () => { throw new Error('SSR must not call native actions') } }
+})
 
 test('已完整下载的实际安装组件显示继续配置环境，缓存字节恢复也不误称重新下载', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] }); stubCustomRendererDomClasses(t)

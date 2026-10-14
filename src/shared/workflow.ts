@@ -59,8 +59,20 @@ export function validateImage(image: GenerationParams['image']): {
     return { bytes, name: `first-frame.${extension}`, mime: png ? 'image/png' : jpg ? 'image/jpeg' : 'image/webp' };
 }
 export function buildWorkflow(params: GenerationParams, uploadedName: string, taskId: string, tier: H3InstallationTier = 'standard'): ApiWorkflow {
-    const p = validateGenerationParams(params, tier === 'lite' ? 20 : 4);
-    const graph = structuredClone(tier === 'lite' ? liteTemplate : template) as ApiWorkflow;
+    const lite = tier === 'lite' || tier === 'lite-audio';
+    const p = validateGenerationParams(params, lite ? 20 : 4);
+    const graph = structuredClone(lite ? liteTemplate : template) as ApiWorkflow;
+    if (tier === 'lite-audio') {
+        graph['4'] = {
+            class_type: 'VAELoader',
+            inputs: { vae_name: 'minimax_h3_audio_vae_fp32.safetensors' }
+        };
+        graph['13'] = {
+            class_type: 'VAEDecodeAudio',
+            inputs: { samples: ['11', 0], vae: ['4', 0] }
+        };
+        graph['14'].inputs.audio = ['13', 0];
+    }
     if (tier === 'balanced') graph['1'].inputs.unet_name = 'minimax_h3_fl2va_pruned_w6a8.safetensors';
     Object.assign(graph['6'].inputs, { prompt: p.prompt, width: p.width, height: p.height, length: p.frames });
     graph['7'].inputs.noise_seed = p.seed;

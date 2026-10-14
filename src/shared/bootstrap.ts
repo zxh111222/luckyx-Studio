@@ -15,7 +15,8 @@ export interface BootstrapFile {
     relativePath: string;
     archiveRoot?: string;
 }
-export type H3InstallationTier = 'lite' | 'balanced' | 'standard' | 'environment';
+export type H3InstallationTier = 'lite' | 'lite-audio' | 'balanced' | 'standard' | 'environment';
+export type H3InstallationProfile = 'environment' | 'h3' | 'h3-lite-audio';
 export interface H3InstallationRecommendation {
     tier: H3InstallationTier;
     label: string;
@@ -28,7 +29,7 @@ export interface H3InstallationRecommendation {
     defaults: { width: number; height: number; frames: number; steps: number; fps: number; audio: boolean };
 }
 export interface BootstrapPlan {
-    profile: 'environment' | 'h3';
+    profile: H3InstallationProfile;
     id: string;
     version: string;
     rootPath: string;

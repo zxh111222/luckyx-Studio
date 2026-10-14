@@ -145,7 +145,8 @@ export async function createStudioService(options: {
     async function scan() {
         h3Runtime = await getH3Runtime(snapshot.settings.installationPath, snapshot.settings.modelPath);
         const defaults = h3Runtime.defaults;
-        Object.assign(snapshot.templates[0], { installationTier: h3Runtime.tier, audio: defaults.audio, defaultResolution: { width: defaults.width, height: defaults.height }, defaultSteps: defaults.steps, frames: defaults.frames, fps: defaults.fps, models: h3Runtime.modelSpecs.map(([, name]) => name), resolutions: [{ label: `${defaults.width} × ${defaults.height}`, width: defaults.width, height: defaults.height }, { label: `${defaults.height} × ${defaults.width} · 竖屏`, width: defaults.height, height: defaults.width }], name: h3Runtime.tier === 'lite' ? 'MiniMax H3 Lite · 视频' : 'MiniMax H3 · 图生视频', description: h3Runtime.tier === 'lite' ? '社区低显存图生与文生视频；20 步，不含音频，首次仍需试跑' : `支持首帧或纯提示词，默认约 ${(defaults.frames / defaults.fps).toFixed(2)} 秒含音频视频` });
+        const lite = h3Runtime.tier === 'lite' || h3Runtime.tier === 'lite-audio';
+        Object.assign(snapshot.templates[0], { installationTier: h3Runtime.tier, audio: defaults.audio, defaultResolution: { width: defaults.width, height: defaults.height }, defaultSteps: defaults.steps, frames: defaults.frames, fps: defaults.fps, models: h3Runtime.modelSpecs.map(([, name]) => name), resolutions: [{ label: `${defaults.width} × ${defaults.height}`, width: defaults.width, height: defaults.height }, { label: `${defaults.height} × ${defaults.width} · 竖屏`, width: defaults.height, height: defaults.width }], name: h3Runtime.tier === 'lite' ? 'MiniMax H3 Lite · 视频' : h3Runtime.tier === 'lite-audio' ? 'MiniMax H3 Lite · 音画实验' : 'MiniMax H3 · 图生视频', description: lite ? `社区低显存图生与文生视频；20 步，${defaults.audio ? '含实验音频' : '不含音频'}，首次仍需试跑` : `支持首帧或纯提示词，默认约 ${(defaults.frames / defaults.fps).toFixed(2)} 秒含音频视频` });
         snapshot.resources = await Promise.all(h3Runtime.modelSpecs.map(async ([folder, name]) => {
             const file = path.join(snapshot.settings.modelPath, folder, name);
             try {
@@ -337,7 +338,7 @@ export async function createStudioService(options: {
         snapshot.engine.status = 'starting';
         snapshot.engine.message = '正在启动本地引擎';
         emit();
-        child = (options.spawnEngine ?? spawn)(installation.python, [...installation.args, ...h3Runtime.launchArgs, '--listen', '127.0.0.1', '--port', '8188', '--reserve-vram', h3Runtime.tier === 'lite' ? '0.5' : '1.5', '--cache-none', '--input-directory', snapshot.settings.inputPath, '--output-directory', snapshot.settings.outputPath, '--user-directory', path.join(options.dataDir, 'comfy-user')], { cwd: installation.cwd, windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', HF_HOME: path.join(root, 'cache/huggingface'), PYTHONDONTWRITEBYTECODE: '1' } });
+        child = (options.spawnEngine ?? spawn)(installation.python, [...installation.args, ...h3Runtime.launchArgs, '--listen', '127.0.0.1', '--port', '8188', '--reserve-vram', ['lite', 'lite-audio'].includes(h3Runtime.tier) ? '0.5' : '1.5', '--cache-none', '--input-directory', snapshot.settings.inputPath, '--output-directory', snapshot.settings.outputPath, '--user-directory', path.join(options.dataDir, 'comfy-user')], { cwd: installation.cwd, windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', HF_HOME: path.join(root, 'cache/huggingface'), PYTHONDONTWRITEBYTECODE: '1' } });
         snapshot.engine.managed = true;
         snapshot.engine.pid = child.pid;
         child.stdout?.on('data', b => log('info', b.toString().trim().slice(-1000)));
@@ -675,11 +676,11 @@ export async function createStudioService(options: {
                 case 'bootstrap.plan': {
                     if (bootstrapFlight) throw new Error('安装正在进行');
                     const p = payload as { rootPath?: unknown; profile?: unknown } | null;
-                    if (typeof p?.rootPath !== 'string' || (p.profile !== undefined && !['environment', 'h3'].includes(String(p.profile)))) throw new Error('请选择安装目录和安装内容');
+                    if (typeof p?.rootPath !== 'string' || (p.profile !== undefined && !['environment', 'h3', 'h3-lite-audio'].includes(String(p.profile)))) throw new Error('请选择安装目录和安装内容');
                     bootstrapPlan = undefined;
                     await hardwareReady;
                     await detectHardware();
-                    bootstrapPlan = await bootstrap.plan({ rootPath: p.rootPath, hardware: snapshot.hardware, ...{ profile: (p.profile ?? 'h3') as 'environment' | 'h3' } });
+                    bootstrapPlan = await bootstrap.plan({ rootPath: p.rootPath, hardware: snapshot.hardware, profile: (p.profile ?? 'h3') as import('../shared/bootstrap').H3InstallationProfile });
                     bootstrapConnectionError = undefined;
                     return bootstrapPlan;
                 }

@@ -23,14 +23,17 @@ test('低于8GB、RAM不足、未知、非RTX与AMD不强行安装H3；基础环
     }
     assert.deepEqual(recommendH3Installation({ ...hardware, ramGb: 8, vramMb: 6144 }, 'environment').hardwareIssues, []);
 });
-test('档位真实选择不同文件与节点；Lite没有32B编码器、音频VAE或TurboLoRA', () => {
-    const lite = getPinnedH3Files('lite'), balanced = getPinnedH3Files('balanced'), standard = getPinnedH3Files('standard');
+test('档位真实选择不同文件与节点；Lite音画版仅追加音频VAE', () => {
+    const lite = getPinnedH3Files('lite'), liteAudio = getPinnedH3Files('lite-audio'), balanced = getPinnedH3Files('balanced'), standard = getPinnedH3Files('standard');
     assert.equal(lite.filter(file => file.kind === 'model').length, 4); assert.equal(lite.filter(file => file.kind === 'node').length, 2);
     assert.ok(!lite.some(file => /32b|audio_vae|turbo/.test(file.name)));
+    assert.ok(liteAudio.some(file => file.name === 'minimax_h3_audio_vae_fp32.safetensors'));
+    assert.deepEqual(liteAudio.filter(file => file.kind === 'model' && file.name !== 'minimax_h3_audio_vae_fp32.safetensors').map(file => file.name), lite.filter(file => file.kind === 'model').map(file => file.name));
+    assert.deepEqual(liteAudio.filter(file => file.kind === 'node').map(file => file.name), lite.filter(file => file.kind === 'node').map(file => file.name));
     assert.ok(balanced.some(file => file.name.includes('w6a8'))); assert.ok(standard.some(file => file.name.includes('pruned_int8')));
     assert.ok(lite.reduce((sum, file) => sum + file.sizeBytes, 0) < balanced.reduce((sum, file) => sum + file.sizeBytes, 0));
     assert.ok(balanced.reduce((sum, file) => sum + file.sizeBytes, 0) < standard.reduce((sum, file) => sum + file.sizeBytes, 0));
-    for (const file of [...lite, ...balanced, ...standard]) { assert.match(file.sha256, /^[a-f0-9]{64}$/); assertOfficialDownloadUrl(file.url); assert.ok(file.sizeBytes > 0); }
+    for (const file of [...lite, ...liteAudio, ...balanced, ...standard]) { assert.match(file.sha256, /^[a-f0-9]{64}$/); assertOfficialDownloadUrl(file.url); assert.ok(file.sizeBytes > 0); }
 });
 test('社区下载仅允许核对过的固定revision，不能换仓库或main；官方校验规则仍生效', () => {
     for (const file of getPinnedH3Files('lite').filter(file => !file.url.includes('Comfy-Org'))) {
@@ -41,12 +44,12 @@ test('社区下载仅允许核对过的固定revision，不能换仓库或main�
     assert.throws(() => assertOfficialDownloadUrl('https://codeload.github.com/other/nodes/zip/' + 'a'.repeat(40)));
 });
 test('所有默认尺寸与帧数符合H3网格，低档减尺寸时长并加载安全固定启动参数', () => {
-    for (const tier of ['lite', 'balanced', 'standard'] as const) {
+    for (const tier of ['lite', 'lite-audio', 'balanced', 'standard'] as const) {
         const defaults = h3TierDefaults(tier); assert.equal(defaults.width % 32, 0); assert.equal(defaults.height % 32, 0); assert.equal((defaults.frames - 5) % 17, 0);
         validateGenerationParams({ ...defaults, templateId: 'h3-i2v', prompt: 'scene', seed: 0 }, defaults.steps);
     }
     assert.deepEqual(h3TierLaunchArgs('lite'), ['--lowvram', '--fp16-vae']); assert.ok(!h3TierLaunchArgs('lite').includes('--cpu-vae'));
-    assert.equal(h3TierDefaults('lite').audio, false); assert.ok(h3TierDefaults('balanced').frames < h3TierDefaults('standard').frames);
+    assert.equal(h3TierDefaults('lite').audio, false); assert.equal(h3TierDefaults('lite-audio').audio, true); assert.ok(h3TierDefaults('balanced').frames < h3TierDefaults('standard').frames);
 });
 test('Lite API图匹配W4A8+4B+投影+Spectrum，20步Euler视频无音频；文生移除图片', () => {
     const params = { templateId: 'h3-i2v', prompt: '一只红球滚动', seed: 42, ...h3TierDefaults('lite') };
@@ -58,6 +61,16 @@ test('Lite API图匹配W4A8+4B+投影+Spectrum，20步Euler视频无音频；文
     assert.ok(!image['14'].inputs.audio); assert.ok(!Object.values(image).some(node => node.class_type === 'VAEDecodeAudio' || node.class_type === 'LoraLoaderModelOnly'));
     const text = buildWorkflow({ ...params, mode: 'text' }, '', 'lite-text', 'lite'); assert.ok(!text['16']); assert.ok(!text['6'].inputs.first_frame);
     assert.throws(() => buildWorkflow({ ...params, steps: 4 }, '', 'bad', 'lite'), /20 步/);
+});
+test('Lite音画版沿用低配图并追加官方音频VAE与同步音轨', () => {
+    const defaults = h3TierDefaults('lite-audio');
+    const graph = buildWorkflow({ ...defaults, templateId: 'h3-i2v', prompt: '海浪声随镜头推进', seed: 42 }, 'input.png', 'lite-audio', 'lite-audio');
+    assert.match(String(graph['1'].inputs.unet_name), /w4a8/); assert.equal(graph['2'].inputs.type, 'krea2');
+    assert.equal(graph['20'].class_type, 'SpectrumApplyMiniMaxH3'); assert.equal(graph['10'].inputs.steps, 20);
+    assert.equal(graph['4'].class_type, 'VAELoader'); assert.equal(graph['4'].inputs.vae_name, 'minimax_h3_audio_vae_fp32.safetensors');
+    assert.deepEqual(graph['13'].inputs.samples, ['11', 0]); assert.deepEqual(graph['13'].inputs.vae, ['4', 0]); assert.deepEqual(graph['14'].inputs.audio, ['13', 0]);
+    assert.ok(!Object.values(graph).some(node => node.class_type === 'LoraLoaderModelOnly'));
+    assert.throws(() => buildWorkflow({ ...defaults, steps: 4, templateId: 'h3-i2v', prompt: 'scene', seed: 0 }, '', 'bad', 'lite-audio'), /20 步/);
 });
 test('均衡图仅换正确扩散checkpoint，旧INT8四步图与含音频任务兼容', () => {
     for (const tier of ['balanced', 'standard'] as const) {

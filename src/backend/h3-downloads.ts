@@ -24,7 +24,7 @@ export function getPinnedH3Files(tier: H3InstallationTier): BootstrapFile[] {
         const source = sources[name];
         return { id: 'h3-' + index, name, kind: 'model' as const, relativePath: 'ComfyUI/models/' + folder + '/' + name, sizeBytes: source.size, sha256: source.sha256, url: `https://huggingface.co/${source.repo}/resolve/${source.revision}/${source.file}` };
     });
-    return [...models, ...(tier === 'lite' ? structuredClone(H3_COMMUNITY_NODES) : [])];
+    return [...models, ...(['lite', 'lite-audio'].includes(tier) ? structuredClone(H3_COMMUNITY_NODES) : [])];
 }
 export function isPinnedCommunityDownload(url: URL): boolean {
     return [...getPinnedH3Files('lite')].filter(file => !file.url.startsWith('https://huggingface.co/Comfy-Org/')).some(file => url.href === file.url);

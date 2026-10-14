@@ -2,14 +2,14 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { PhDownloadSimple, PhFolderOpen, PhArrowClockwise, PhStop, PhBookOpen, PhCheckCircle } from '@phosphor-icons/vue'
 import type { Snapshot } from '../../shared/contracts'
-import type { BootstrapPlan, BootstrapState } from '../../shared/bootstrap'
+import type { BootstrapPlan, BootstrapState, H3InstallationProfile } from '../../shared/bootstrap'
 import { recommendH3Installation } from '../../shared/h3-installation'
 import { selectCudaRuntime } from '../../shared/cuda-runtime'
 import { desktop, invoke } from '../src/api'
 const props = defineProps<{ snapshot: Snapshot }>()
 const emit = defineEmits<{ complete: []; create: [] }>()
 const root = ref('')
-const profile = ref('h3')
+const profile = ref<H3InstallationProfile>('h3')
 const plan = ref<BootstrapPlan | null>(null)
 const state = ref<BootstrapState | null>(null)
 const error = ref('')
@@ -22,7 +22,7 @@ let closed = false
 let polling = false
 let restored = false
 const active = computed(() => state.value && ['downloading', 'verifying', 'extracting'].includes(state.value.status))
-const screening = computed(() => recommendH3Installation(props.snapshot.hardware, profile.value as 'h3' | 'environment'))
+const screening = computed(() => recommendH3Installation(props.snapshot.hardware, profile.value))
 const recommendation = computed(() => plan.value?.recommendation ?? screening.value.recommendation)
 const cudaScreening = computed(() => selectCudaRuntime(props.snapshot.hardware))
 const runtime = computed(() => plan.value?.runtime ?? cudaScreening.value.runtime)
@@ -72,9 +72,9 @@ onUnmounted(() => { closed = true; if (timer) clearInterval(timer) })
     <div class="hardware-summary"><span>{{ snapshot.hardware.gpuName || '显卡待检测' }}</span><span>{{ snapshot.hardware.vramMb > 0 ? (snapshot.hardware.vramMb / 1024).toFixed(1) + ' GB 显存' : '显存待检测' }} · {{ snapshot.hardware.ramGb || '待检测' }} GB 内存</span></div>
     <div class="runtime-card"><div class="recommendation-heading"><strong>{{ runtime.label }}</strong><span class="badge">{{ runtime.compatibility === 'supported' ? '驱动条件符合' : runtime.compatibility === 'conditional' ? '条件试用' : runtime.compatibility === 'driver-update-required' ? '需要更新驱动' : '需要检查' }}</span></div><p>NVIDIA 驱动 {{ snapshot.hardware.driver || '未检测' }}<span v-if="snapshot.hardware.cudaVersion"> · nvidia-smi CUDA {{ snapshot.hardware.cudaVersion }}</span></p><p>{{ runtime.reason }}</p><p v-for="note in runtime.warnings" :key="note" class="small muted">{{ note }}</p><button v-if="runtime.compatibility !== 'supported'" class="text-button" @click="link(runtime.driverUrl)">打开 NVIDIA 官方驱动下载页 ↗</button><p v-if="runtime.compatibility === 'driver-update-required'" class="small muted">更新驱动并按提示重启电脑，再回来检查配置。原安装位置、模型和下载进度会保留。</p></div>
     <label class="install-label" for="bootstrap-profile">安装方案</label>
-    <select id="bootstrap-profile" v-model="profile" class="input install-profile" :disabled="Boolean(active) || waiting" @change="plan = null; consent = false"><option value="h3">ComfyUI + H3 · 按本机配置自动选择（8 GB 显存起）</option><option value="environment">只安装 ComfyUI，稍后再选模型</option></select>
+    <select id="bootstrap-profile" v-model="profile" class="input install-profile" :disabled="Boolean(active) || waiting" @change="plan = null; consent = false"><option value="h3">ComfyUI + H3 · 按本机配置自动选择（8 GB 显存起）</option><option value="h3-lite-audio">H3 Lite 音画版 · 实验（8 GB 条件试跑）</option><option value="environment">只安装 ComfyUI，稍后再选模型</option></select>
     <div class="recommendation-card"><div class="recommendation-heading"><strong>{{ recommendation.label }}</strong><span class="badge">{{ recommendation.source === 'community' ? '社区低配方案' : '官方文件' }}</span></div><p>{{ recommendation.reason }}</p><div v-if="recommendation.tier !== 'environment'" class="trial-settings"><span>首次试跑</span><strong>{{ recommendation.defaults.width }} × {{ recommendation.defaults.height }} · {{ (recommendation.defaults.frames / recommendation.defaults.fps).toFixed(2) }} 秒 · {{ recommendation.defaults.steps }} 步</strong><span>{{ recommendation.defaults.audio ? '视频 + 音频' : '仅视频' }}</span></div><ul v-if="recommendation.warnings.length" class="recommendation-notes"><li v-for="note in recommendation.warnings" :key="note">{{ note }}</li></ul><ul v-if="initialIssues.length && !plan" class="warning"><li v-for="issue in initialIssues" :key="issue">{{ issue }}</li></ul>
-      <details class="tiers"><summary>其他配置如何选择？</summary><dl><div><dt>8～15 GB 显存</dt><dd>Lite · W4A8 + 4B 编码器，约 16 GB 内存起，建议 32 GB。</dd></div><div><dt>约 16 GB 显存起</dt><dd>均衡 · 官方 W6A8，约 32 GB 内存起；保留原生音频。</dd></div><div><dt>约 24 GB 显存起</dt><dd>标准 · 官方 INT8，约 48 GB 内存起；内存较少会选更轻方案。</dd></div></dl><p class="small muted">以上为 Windows NVIDIA RTX 设备的安装建议；其他显卡或低于 8 GB 显存时提供教程。安装清单以实际检测为准。</p></details>
+      <details class="tiers"><summary>其他配置如何选择？</summary><dl><div><dt>8～15 GB 显存</dt><dd>Lite 视频版默认占用较低；可手动选择 Lite 音画实验版，建议至少 32 GB 内存。</dd></div><div><dt>约 16 GB 显存起</dt><dd>均衡 · 官方 W6A8，约 32 GB 内存起；保留原生音频。</dd></div><div><dt>约 24 GB 显存起</dt><dd>标准 · 官方 INT8，约 48 GB 内存起；内存较少会选更轻方案。</dd></div></dl><p class="small muted">以上为 Windows NVIDIA RTX 设备的安装建议；其他显卡或低于 8 GB 显存时提供教程。安装清单以实际检测为准。</p></details>
     </div>
     <label class="install-label" for="bootstrap-root">安装位置</label><div class="install-path"><input id="bootstrap-root" v-model="root" class="input" placeholder="例如 D:\AI，选择空间充足的磁盘" :disabled="Boolean(active) || waiting" @input="plan = null; consent = false" /><button v-if="desktop" class="btn secondary" :disabled="Boolean(active) || waiting" @click="choose"><PhFolderOpen :size="18" />选择目录</button></div>
     <p class="muted small">创建独立的 luckyx-environment。环境自动解压，模型放入对应 models 子目录，社区节点放入 custom_nodes；已有环境和模型保留。</p>

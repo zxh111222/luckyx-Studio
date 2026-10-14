@@ -112,6 +112,18 @@ test('RTX4080实际16376MiB/31GB使用官方均衡，8GB起使用社区Lite而�
  const f=await fixture(t);for(const vramMb of [16376,16000]){const p=await f.manager.plan({rootPath:f.root,hardware:{...hardware,vramMb,ramGb:31}});assert.deepEqual(p.hardwareIssues,[]);}
  const low=await f.manager.plan({rootPath:f.root,hardware:{...hardware,vramMb:8192,ramGb:16}});assert.deepEqual(low.hardwareIssues,[]);assert.equal(low.recommendation.tier,'lite');assert.equal(low.files.filter(file=>file.kind==='model').length,4);assert.equal(low.files.filter(file=>file.kind==='node').length,2);assert.equal(low.recommendation.defaults.audio,false);assert.ok(low.files.some(file=>file.name.includes('w4a8')));
 });
+test('8GB可选Lite音画实验档，安装追加音频VAE并持久恢复为原档位',async t=>{
+ const low={...hardware,vramMb:8192,ramGb:16};const f=await fixture(t,{getHardware:()=>low});
+ const p=await f.manager.plan({rootPath:f.root,hardware:low,profile:'h3-lite-audio'});
+ assert.equal(p.profile,'h3-lite-audio');assert.equal(p.recommendation.tier,'lite-audio');assert.equal(p.recommendation.defaults.audio,true);
+ assert.equal(p.files.filter(file=>file.kind==='model').length,5);assert.equal(p.files.filter(file=>file.kind==='node').length,2);
+ assert.equal(p.files.filter(file=>file.name==='minimax_h3_audio_vae_fp32.safetensors').length,1);
+ assert.ok(p.files.some(file=>file.name.includes('w4a8')));assert.ok(!p.files.some(file=>/32b|turbo/.test(file.name)));
+ const done=await f.manager.start(p);assert.equal(done.status,'completed');assert.equal(done.completedFiles,8);
+ const marker=JSON.parse(await fs.readFile(path.join(p.targetPath,'luckyx-managed.json'),'utf8'));assert.equal(marker.installationTier,'lite-audio');assert.equal(marker.defaults.audio,true);assert.equal(marker.models.length,5);assert.equal(marker.nodes.length,2);
+ await f.manager.dispose();const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;
+ const state=restored.snapshot();assert.equal(state.status,'completed');assert.equal(state.plan!.profile,'h3-lite-audio');assert.equal(state.plan!.recommendation.tier,'lite-audio');assert.equal(state.plan!.recommendation.defaults.audio,true);
+});
 test('既有venv环境仍复用启动适配脚本，缺入口或空Python不可启动',async t=>{
  const root=await temporary(t);await put(root,'venv/Scripts/python.exe');await put(root,'ComfyUI/main.py');await put(root,'launch_comfy.py');
  const plan=await getEngineInstallation(root);assert.equal(plan.python,path.join(root,'venv/Scripts/python.exe'));assert.equal(plan.launcher,path.join(root,'launch_comfy.py'));assert.deepEqual(plan.args,[path.join(root,'launch_comfy.py'),'--fast-disk']);
@@ -282,6 +294,11 @@ test('快速缓存恢复不遍历Python但仍拒绝必要资源路径上的junct
 test('旧版无selection的缓存通过固定模型文件名恢复原档位，不等待真实硬件探测',async t=>{
  const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));const diffusion=p.files.find(file=>file.kind==='model')!;const destination=path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable',diffusion.relativePath);await fs.mkdir(path.dirname(destination),{recursive:true});await fs.writeFile(destination,archive);await f.manager.dispose();const saved=JSON.parse(await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8'));delete saved.selection;await fs.writeFile(path.join(f.root,'data/bootstrap-progress.json'),JSON.stringify(saved));const before=f.requests.length;
  const restored=createBootstrapManager({...f.options,getHardware:async()=>{throw new Error('startup must not invoke nvidia-smi');}});t.after(()=>restored.dispose());await restored.ready;const state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.plan!.recommendation.tier,p.recommendation.tier);assert.equal(state.plan!.runtime!.id,p.runtime!.id);assert.equal(state.plan!.runtime!.compatibility,'unknown');assert.equal(state.receivedBytes,archive.length);assert.equal(f.requests.length,before);assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8')).selection,undefined);
+});
+
+test('旧版无selection的Lite视频缓存不会被恢复成Lite音画档',async t=>{
+ const liteHardware={...hardware,vramMb:8192,ramGb:16};const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware:liteHardware});assert.equal(p.recommendation.tier,'lite');await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));const diffusion=p.files.find(file=>file.kind==='model')!;const destination=path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable',diffusion.relativePath);await fs.mkdir(path.dirname(destination),{recursive:true});await fs.writeFile(destination,archive);await f.manager.dispose();const saved=JSON.parse(await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8'));delete saved.selection;await fs.writeFile(path.join(f.root,'data/bootstrap-progress.json'),JSON.stringify(saved));
+ const restored=createBootstrapManager({...f.options,getHardware:async()=>{throw new Error('startup must not invoke nvidia-smi');}});t.after(()=>restored.dispose());await restored.ready;assert.equal(restored.snapshot().plan!.recommendation.tier,'lite');
 });
 
 test('最终GPU检查失败保留全量下载，但不继续显示最后一个模型文件作为故障对象',async t=>{

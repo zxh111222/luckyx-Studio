@@ -11,7 +11,7 @@ export async function getH3Runtime(installationPath: string, modelPath: string) 
         const stat = await fs.lstat(markerPath);
         if (path.resolve(modelPath) === path.resolve(installationPath, 'ComfyUI/models') && stat.isFile() && !stat.isSymbolicLink() && stat.size < 65536) {
             const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
-            if (marker.app === 'luckyx. Studio' && ['lite', 'balanced', 'standard'].includes(marker.installationTier)) {
+            if (marker.app === 'luckyx. Studio' && ['lite', 'lite-audio', 'balanced', 'standard'].includes(marker.installationTier)) {
                 tier = marker.installationTier;
                 marked = true;
             }

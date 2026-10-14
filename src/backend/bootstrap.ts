@@ -2,7 +2,7 @@ import { promises as fs, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import type { BootstrapFile, BootstrapHardware, BootstrapPlan, BootstrapState } from '../shared/bootstrap';
+import type { BootstrapFile, BootstrapHardware, BootstrapPlan, BootstrapState, H3InstallationProfile } from '../shared/bootstrap';
 import { recommendH3Installation, h3TierDefaults, h3TierLaunchArgs, H3_LITE_NODES } from '../shared/h3-installation';
 import { getPinnedH3Files, isPinnedCommunityDownload } from './h3-downloads';
 import { selectCudaRuntime } from '../shared/cuda-runtime';
@@ -239,7 +239,7 @@ export function createBootstrapManager(options: BootstrapOptions) {
     let state: BootstrapState = { status: 'idle', phase: '准备安装', message: '先检查硬件、磁盘和官方资源', receivedBytes: 0, totalBytes: 0, completedFiles: 0, tutorialUrl };
     const listeners = new Set<(value: BootstrapState) => void>();
     let currentPlan: BootstrapPlan | undefined, controller: AbortController | undefined, active: Promise<BootstrapState> | undefined;
-    let lastInput: { rootPath: string; profile: 'environment' | 'h3'; selection?: { tier: BootstrapPlan['recommendation']['tier']; runtimeId: 'cu130' | 'cu126' } } | undefined;
+    let lastInput: { rootPath: string; profile: H3InstallationProfile; selection?: { tier: BootstrapPlan['recommendation']['tier']; runtimeId: 'cu130' | 'cu126' } } | undefined;
     let persistedStatus = '', writes = Promise.resolve(), restoring = true;
     const progressPath = path.join(options.dataDir, 'bootstrap-progress.json');
     function persistProgress(force = false) {
@@ -259,7 +259,7 @@ export function createBootstrapManager(options: BootstrapOptions) {
     async function plan(input: {
         rootPath: string;
         hardware: BootstrapHardware;
-        profile?: 'environment' | 'h3';
+        profile?: H3InstallationProfile;
     }, allowInstalled = false): Promise<BootstrapPlan> {
         if (active)
             throw new Error('安装正在进行，请先取消');
@@ -274,7 +274,7 @@ export function createBootstrapManager(options: BootstrapOptions) {
             if (!allowInstalled && await exists(targetPath))
                 throw new Error('目标环境目录已存在，请使用已有环境接入或选择其他目录');
             const profile = input.profile ?? 'h3';
-            if (profile !== 'environment' && profile !== 'h3')
+            if (!['environment', 'h3', 'h3-lite-audio'].includes(profile))
                 throw new Error('请选择环境或 H3 完整安装');
             let { recommendation, hardwareIssues } = recommendH3Installation(input.hardware, profile);
             const { runtime, hardwareIssues: runtimeIssues } = selectCudaRuntime(input.hardware);
@@ -300,7 +300,7 @@ export function createBootstrapManager(options: BootstrapOptions) {
             }
             catch { /* verified immutable release pin remains available */ }
             const freeBytes = options.getFreeBytes ? await options.getFreeBytes(diskDirectory) : await fs.statfs(diskDirectory).then(stat => Number(stat.bavail) * Number(stat.bsize));
-            let files = [environment, ...(profile === 'h3' ? (options.getModelFiles ?? getPinnedH3Files)(recommendation.tier) : [])];
+            let files = [environment, ...(profile !== 'environment' ? (options.getModelFiles ?? getPinnedH3Files)(recommendation.tier) : [])];
             if (profile === 'h3' && !hardwareIssues.length && !allowInstalled) {
                 const initialLabel = recommendation.label;
                 for (const tier of recommendation.tier === 'standard' ? ['standard', 'balanced', 'lite'] as const : recommendation.tier === 'balanced' ? ['balanced', 'lite'] as const : ['lite'] as const) {
@@ -327,9 +327,9 @@ export function createBootstrapManager(options: BootstrapOptions) {
             const cachedBytes = await downloadedPlanBytes(input.rootPath, targetPath, 'v0.39.0', files, allowInstalled);
             const reusableBytes = allowInstalled ? cachedBytes : await reusablePlanBytes(input.rootPath, targetPath, 'v0.39.0', files);
             const requiredFreeBytes = Math.max(5 * GiB, downloadBytes + environment.sizeBytes * 4 + 5 * GiB - reusableBytes);
-            currentPlan = { profile, id: randomUUID(), version: 'v0.39.0', rootPath: path.resolve(input.rootPath), targetPath, files, downloadBytes, cachedBytes, requiredFreeBytes, freeBytes, hardwareIssues, recommendation, runtime, tutorialUrl: recommendation.tier === 'lite' ? 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM' : tutorialUrl };
+            currentPlan = { profile, id: randomUUID(), version: 'v0.39.0', rootPath: path.resolve(input.rootPath), targetPath, files, downloadBytes, cachedBytes, requiredFreeBytes, freeBytes, hardwareIssues, recommendation, runtime, tutorialUrl: ['lite', 'lite-audio'].includes(recommendation.tier) ? 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM' : tutorialUrl };
             lastInput!.selection = { tier: recommendation.tier, runtimeId: runtime.id };
-            publish({ status: 'idle', message: hardwareIssues.length ? hardwareIssues.join('；') : profile === 'h3' ? recommendation.label + '：按本机配置选择，首次生成仍需试跑' : '基础环境可安装；H3 模型不会下载', receivedBytes: cachedBytes, totalBytes: downloadBytes, tutorialUrl: currentPlan.tutorialUrl, plan: structuredClone(currentPlan), resumable: false });
+            publish({ status: 'idle', message: hardwareIssues.length ? hardwareIssues.join('；') : profile !== 'environment' ? recommendation.label + '：按本机配置选择，首次生成仍需试跑' : '基础环境可安装；H3 模型不会下载', receivedBytes: cachedBytes, totalBytes: downloadBytes, tutorialUrl: currentPlan.tutorialUrl, plan: structuredClone(currentPlan), resumable: false });
             persistProgress(true);
             await writes;
             return structuredClone(currentPlan);
@@ -579,7 +579,7 @@ export function createBootstrapManager(options: BootstrapOptions) {
                 signal, rename: options.renameEnvironmentDirectory,
                 onRetry: (next, total) => publish({ phase: '完成环境配置', message: `环境目录暂时被占用，正在尝试第 ${next} / ${total} 次配置；已下载的模型会保留`, currentFile: undefined })
             });
-            publish({ status: 'completed', phase: '安装完成', message: trusted.profile === 'h3' ? '环境和模型完整性通过；请启动后检查节点并进行首次试跑' : '基础环境完整性通过；请启动检查节点，H3 模型未下载', installationPath: trusted.targetPath, receivedBytes: trusted.downloadBytes });
+            publish({ status: 'completed', phase: '安装完成', message: trusted.profile !== 'environment' ? '环境和模型完整性通过；请启动后检查节点并进行首次试跑' : '基础环境完整性通过；请启动检查节点，H3 模型未下载', installationPath: trusted.targetPath, receivedBytes: trusted.downloadBytes });
         }
         catch (error: any) {
             publish({ status: signal.aborted ? 'cancelled' : 'error', phase: signal.aborted ? '已取消安装' : error instanceof EnvironmentPublishError ? '文件已准备，目录配置未完成' : '安装未完成', message: signal.aborted ? '已保留下载进度，可重新检查后继续安装' : error.message, error: signal.aborted ? undefined : error.message, ...(error instanceof EnvironmentPublishError ? { currentFile: undefined } : {}), resumable: signal.aborted || !await exists(trusted.targetPath) });
@@ -592,11 +592,11 @@ export function createBootstrapManager(options: BootstrapOptions) {
             const stat = await noLinks(progressPath);
             if (!stat.isFile() || stat.size > 65536) return;
             const saved = JSON.parse(await fs.readFile(progressPath, 'utf8'));
-            if (saved.app !== 'luckyx. Studio' || saved.schemaVersion !== 1 || typeof saved.rootPath !== 'string' || !['environment', 'h3'].includes(saved.profile)) return;
+            if (saved.app !== 'luckyx. Studio' || saved.schemaVersion !== 1 || typeof saved.rootPath !== 'string' || !['environment', 'h3', 'h3-lite-audio'].includes(saved.profile)) return;
             if (!path.isAbsolute(saved.rootPath) || saved.rootPath.includes('\0')) throw new Error('安装记录中的目录无效');
             await nearestExistingDirectory(saved.rootPath);
             const targetPath = path.join(saved.rootPath, 'luckyx-environment'), cache = path.join(saved.rootPath, '.luckyx-bootstrap');
-            const validTier = (value: unknown): value is BootstrapPlan['recommendation']['tier'] => ['environment', 'lite', 'balanced', 'standard'].includes(value as string);
+            const validTier = (value: unknown): value is BootstrapPlan['recommendation']['tier'] => ['environment', 'lite', 'lite-audio', 'balanced', 'standard'].includes(value as string);
             let selection = saved.selection && validTier(saved.selection.tier) && ['cu130', 'cu126'].includes(saved.selection.runtimeId) ? saved.selection as { tier: BootstrapPlan['recommendation']['tier']; runtimeId: 'cu130' | 'cu126' } : undefined;
             // Old records did not save selection. Recover only the fixed model tier
             // and runtime identifiers; never trust saved URLs, hashes, or drivers.
@@ -613,7 +613,8 @@ export function createBootstrapManager(options: BootstrapOptions) {
                         if (marker.app === 'luckyx. Studio' && marker.version === 'v0.39.0' && validTier(marker.installationTier)) { selection = { tier: marker.installationTier, runtimeId: marker.runtimeId === 'cu126' ? 'cu126' : 'cu130' }; break; }
                     }
                     if (selection) break;
-                    if (saved.profile === 'h3') for (const tier of ['lite', 'balanced', 'standard'] as const) {
+                    const recoveryTiers = saved.profile === 'h3-lite-audio' ? ['lite-audio'] as const : saved.profile === 'h3' ? ['lite', 'balanced', 'standard'] as const : [];
+                    for (const tier of recoveryTiers) {
                         const diffusion = (options.getModelFiles ?? getPinnedH3Files)(tier).find(file => file.kind === 'model');
                         if (!diffusion) continue;
                         const file = path.join(cache, paths.extractedName, 'ComfyUI_windows_portable', diffusion.relativePath);
@@ -626,7 +627,7 @@ export function createBootstrapManager(options: BootstrapOptions) {
             selection ??= { tier: saved.profile === 'environment' ? 'environment' : 'lite', runtimeId: 'cu130' };
             // This placeholder determines a fixed manifest only; compatibility is
             // deliberately unknown until the user requests a fresh hardware check.
-            const emptyH3 = saved.profile === 'h3' && selection.tier === 'environment';
+            const emptyH3 = saved.profile !== 'environment' && selection.tier === 'environment';
             const restoreHardware: BootstrapHardware = { gpuName: selection.runtimeId === 'cu126' ? 'NVIDIA GeForce GTX 1080' : 'NVIDIA GeForce RTX 3060', vramMb: emptyH3 ? 0 : selection.tier === 'standard' ? 32768 : selection.tier === 'balanced' ? 16384 : 8192, ramGb: emptyH3 ? 0 : selection.tier === 'standard' ? 64 : selection.tier === 'balanced' ? 32 : 16, driver: '未知' };
             const restored = await plan({ rootPath: saved.rootPath, profile: saved.profile, hardware: restoreHardware }, true);
             if (await exists(restored.targetPath)) {
@@ -639,9 +640,10 @@ export function createBootstrapManager(options: BootstrapOptions) {
                 if (marker.app !== 'luckyx. Studio' || marker.version !== restored.version) throw new Error('已有环境需要手动检查，不能自动覆盖');
                 // Completed installations keep their original tier; changed hardware never silently replaces weights.
                 const installedFiles = (options.getModelFiles ?? getPinnedH3Files)(marker.installationTier ?? 'standard');
-                const installedTier = restored.profile === 'environment' ? 'environment' : ['lite', 'balanced', 'standard'].includes(marker.installationTier) ? marker.installationTier as BootstrapPlan['recommendation']['tier'] : 'standard';
-                const recommendation = { ...restored.recommendation, tier: installedTier, label: installedTier === 'lite' ? 'H3 Lite · W4A8 + 4B 编码器' : installedTier === 'balanced' ? 'H3 均衡 · 官方 W6A8' : installedTier === 'standard' ? 'H3 标准 · 官方 INT8' : 'ComfyUI 基础环境', source: installedTier === 'lite' ? 'community' as const : 'official' as const, reason: '已安装的配置会保留；硬件变化不会自动替换模型', modelNames: installedFiles.filter(file => file.kind === 'model').map(file => file.name), requiredNodes: installedTier === 'lite' ? [...H3_LITE_NODES] : [], defaults: h3TierDefaults(installedTier), launchArgs: h3TierLaunchArgs(installedTier) };
-                recommendation.warnings = installedTier === 'lite' ? ['已安装社区 Lite 图，使用 ClipProj / Spectrum；当前方案仅视频，不含音频', '按硬件估算的试用配置，尚未在此电脑验证生成'] : installedTier === 'environment' ? [] : ['已保留原有官方音视频配置；启动后检查节点并进行首次试跑'];
+                const installedTier = restored.profile === 'environment' ? 'environment' : ['lite', 'lite-audio', 'balanced', 'standard'].includes(marker.installationTier) ? marker.installationTier as BootstrapPlan['recommendation']['tier'] : 'standard';
+                const lite = installedTier === 'lite' || installedTier === 'lite-audio';
+                const recommendation = { ...restored.recommendation, tier: installedTier, label: installedTier === 'lite' ? 'H3 Lite 视频版 · W4A8 + 4B' : installedTier === 'lite-audio' ? 'H3 Lite 音画版 · 实验' : installedTier === 'balanced' ? 'H3 均衡 · 官方 W6A8' : installedTier === 'standard' ? 'H3 标准 · 官方 INT8' : 'ComfyUI 基础环境', source: lite ? 'community' as const : 'official' as const, reason: '已安装的配置会保留；硬件变化不会自动替换模型', modelNames: installedFiles.filter(file => file.kind === 'model').map(file => file.name), requiredNodes: lite ? [...H3_LITE_NODES] : [], defaults: h3TierDefaults(installedTier), launchArgs: h3TierLaunchArgs(installedTier) };
+                recommendation.warnings = installedTier === 'lite' ? ['已安装社区 Lite 图，使用 ClipProj / Spectrum；当前方案仅视频，不含音频', '按硬件估算的试用配置，尚未在此电脑验证生成'] : installedTier === 'lite-audio' ? ['已安装社区 Lite 音画实验方案；启动后先用短片验证声音、显存和稳定性'] : installedTier === 'environment' ? [] : ['已保留原有官方音视频配置；启动后检查节点并进行首次试跑'];
                 // Preserve an installed runtime just as we preserve its model tier.
                 // Legacy completed installations predate runtimeId and used cu130.
                 const installedRuntimeId = marker.runtimeId === 'cu126' ? 'cu126' : 'cu130';
