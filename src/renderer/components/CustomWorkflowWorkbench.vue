@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { PhArrowLeft, PhCheckCircle, PhCube, PhInfo, PhPlay, PhUploadSimple } from '@phosphor-icons/vue'
+import { PhArrowLeft, PhArrowClockwise, PhCheckCircle, PhCube, PhInfo, PhPlay, PhUploadSimple } from '@phosphor-icons/vue'
 import type { TaskRecord, UserWorkflow } from '../../shared/contracts'
 import type { WorkflowParameterAnalysis, WorkflowParameterSlot } from '../../shared/workflow-parameters'
 import { invoke } from '../src/api'
@@ -18,12 +18,14 @@ const canSubmit = computed(() => result.value?.status === 'ready' && props.engin
 const inputType = (slot: WorkflowParameterSlot) => slot.kind === 'prompt' ? 'textarea' : slot.valueType === 'boolean' ? 'checkbox' : ['integer', 'number'].includes(slot.valueType) ? 'number' : 'text'
 
 async function load() {
-  error.value = ''
+  if (busy.value) return
+  busy.value = true; error.value = ''
   try {
     const analyzed = await invoke<typeof result.value>('workflow.analyze', { id: props.workflow.id })
     result.value = analyzed
     for (const slot of analyzed?.analysis?.slots ?? []) if (slot.editable && !['image', 'video', 'audio'].includes(slot.kind)) values[slot.id] = slot.value
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
+  } catch (reason) { result.value = undefined; error.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { busy.value = false }
 }
 async function chooseMedia(slot: WorkflowParameterSlot, event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]; (event.target as HTMLInputElement).value = ''
@@ -48,6 +50,7 @@ onMounted(load)
     <button class="text-button back" @click="emit('back')"><PhArrowLeft :size="17" />返回精选模板</button>
     <div class="panel workflow-banner"><div class="workflow-icon"><PhCube :size="27" /></div><div><p class="eyebrow">我的工作流</p><h2>{{ workflow.name }}</h2><p class="muted">根据 API 工作流自动识别内容与参数；生成时只修改下方列出的输入。</p></div><span v-if="result?.status === 'ready'" class="good"><PhCheckCircle :size="17" />已识别</span></div>
     <div v-if="!result && !error" class="panel state-card">正在识别工作流参数…</div>
+    <div v-else-if="error && !result" class="panel state-card" role="alert"><PhInfo :size="24" /><h3>工作流识别未完成</h3><p class="error">{{ error }}</p><button class="btn secondary" :disabled="busy" @click="load"><PhArrowClockwise :size="17" />重新识别</button></div>
     <div v-else-if="result?.status !== 'ready'" class="panel state-card"><PhInfo :size="24" /><h3>{{ result?.message }}</h3><p class="muted">画布格式仍可在节点编辑器中使用；从 ComfyUI 导出 API 格式后重新导入，即可生成自动表单。</p></div>
     <form v-else class="panel dynamic-form" @submit.prevent="submit">
       <div class="form-heading"><div><h3>需要的内容</h3><p class="muted">{{ editable.length }} 个可编辑输入 · {{ dependencies.length }} 个模型依赖</p></div><span class="badge">{{ result.analysis?.features.audioPipeline ? '含音频输出' : '视频输出' }}</span></div>

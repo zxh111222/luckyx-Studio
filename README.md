@@ -2,7 +2,7 @@
 
 <p align="center"><strong>Windows 本地视频工作流启动器</strong><br />准备环境、管理工作流、生成视频，创作少一点配置。</p>
 
-<p align="center">v0.1.14 · Windows x64 · Electron + Vue · 本地存储</p>
+<p align="center">v0.1.15 · Windows x64 · Electron + Vue · 本地存储</p>
 
 <p align="center"><a href="#快速开始">快速开始</a> · <a href="#使用教程">使用教程</a> · <a href="#更新与卸载">更新与卸载</a> · <a href="#从源码运行">开发与构建</a></p>
 
@@ -31,10 +31,10 @@
 
 ### 1. 安装启动器
 
-当前安装包在本地 `dist/v0.1.14/`，尚未发布线上下载链接：
+当前安装包在本地 `dist/v0.1.15/`，尚未发布线上下载链接：
 
 ```text
-luckyx-Studio-Setup-0.1.14-x64.exe
+luckyx-Studio-Setup-0.1.15-x64.exe
 ```
 
 按新向导选择应用安装目录。升级前从托盘退出旧版，再覆盖安装，无需先卸载。安装包目前未签名。

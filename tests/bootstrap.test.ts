@@ -124,6 +124,34 @@ test('8GB可选Lite音画实验档，安装追加音频VAE并持久恢复为原�
  await f.manager.dispose();const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;
  const state=restored.snapshot();assert.equal(state.status,'completed');assert.equal(state.plan!.profile,'h3-lite-audio');assert.equal(state.plan!.recommendation.tier,'lite-audio');assert.equal(state.plan!.recommendation.defaults.audio,true);
 });
+test('受管理Lite环境增量升级只下载音频VAE，不重下环境、已有模型或节点',async t=>{
+ const low={...hardware,vramMb:8192,ramGb:16};const f=await fixture(t,{getHardware:()=>low});
+ const lite=await f.manager.plan({rootPath:f.root,hardware:low,profile:'h3'});assert.equal((await f.manager.start(lite)).status,'completed');
+ const markerPath=path.join(lite.targetPath,'luckyx-managed.json'),before=JSON.parse(await fs.readFile(markerPath,'utf8'));assert.equal(before.installationTier,'lite');
+ const requestsBefore=f.requests.length,runsBefore=f.runs.length;
+ const upgrade=await f.manager.plan({rootPath:f.root,hardware:low,profile:'h3-lite-audio'});
+ assert.equal(upgrade.incrementalFromTier,'lite');assert.equal(upgrade.files.length,1);assert.equal(upgrade.files[0].name,'minimax_h3_audio_vae_fp32.safetensors');assert.equal(upgrade.targetPath,lite.targetPath);
+ const completed=await f.manager.start(upgrade);assert.equal(completed.status,'completed');assert.equal(completed.completedFiles,1);
+ const downloads=f.requests.slice(requestsBefore).filter(request=>!request.url.includes('api.github.com/'));
+ assert.deepEqual(downloads.map(request=>request.url),[upgrade.files[0].url]);assert.equal(f.runs.length,runsBefore,'增量升级不得解压环境、节点或重跑Python');
+ for(const file of getPinnedH3Files('lite').map(file=>({...file,sizeBytes:archive.length,sha256:digest(archive)}))) {
+  const stat=await fs.stat(path.join(lite.targetPath,file.relativePath));assert.ok(file.kind==='node'?stat.isDirectory():stat.isFile(),file.name);
+ }
+ const marker=JSON.parse(await fs.readFile(markerPath,'utf8'));assert.equal(marker.installationTier,'lite-audio');assert.equal(marker.defaults.audio,true);assert.equal(marker.models.length,5);assert.equal(marker.nodes.length,2);
+ await f.manager.dispose();const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;
+ assert.equal(restored.snapshot().status,'completed');assert.equal(restored.snapshot().plan!.recommendation.tier,'lite-audio');assert.equal(restored.snapshot().plan!.recommendation.defaults.audio,true);
+});
+test('Lite音画增量下载校验失败保留原Lite环境和marker',async t=>{
+ const low={...hardware,vramMb:8192,ramGb:16};let corruptAudio=false;
+ const f=await fixture(t,{getHardware:()=>low,body:async url=>new Response(corruptAudio&&url.includes('audio_vae')?Buffer.alloc(archive.length,1):archive)});
+ const lite=await f.manager.plan({rootPath:f.root,hardware:low,profile:'h3'});assert.equal((await f.manager.start(lite)).status,'completed');
+ const markerPath=path.join(lite.targetPath,'luckyx-managed.json'),markerBefore=await fs.readFile(markerPath,'utf8');
+ const baseline=await Promise.all(lite.files.filter(file=>file.kind==='model').map(async file=>[file.relativePath,digest(await fs.readFile(path.join(lite.targetPath,file.relativePath)))] as const));
+ corruptAudio=true;const upgrade=await f.manager.plan({rootPath:f.root,hardware:low,profile:'h3-lite-audio'});const failed=await f.manager.start(upgrade);
+ assert.equal(failed.status,'error');assert.match(failed.error!,/SHA256/);assert.equal(await fs.readFile(markerPath,'utf8'),markerBefore);
+ assert.equal(JSON.parse(markerBefore).installationTier,'lite');await assert.rejects(fs.stat(path.join(lite.targetPath,upgrade.files[0].relativePath)),{code:'ENOENT'});
+ for(const [relative,expected] of baseline)assert.equal(digest(await fs.readFile(path.join(lite.targetPath,relative))),expected);
+});
 test('既有venv环境仍复用启动适配脚本，缺入口或空Python不可启动',async t=>{
  const root=await temporary(t);await put(root,'venv/Scripts/python.exe');await put(root,'ComfyUI/main.py');await put(root,'launch_comfy.py');
  const plan=await getEngineInstallation(root);assert.equal(plan.python,path.join(root,'venv/Scripts/python.exe'));assert.equal(plan.launcher,path.join(root,'launch_comfy.py'));assert.deepEqual(plan.args,[path.join(root,'launch_comfy.py'),'--fast-disk']);

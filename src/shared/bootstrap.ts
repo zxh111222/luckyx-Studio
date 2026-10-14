@@ -43,6 +43,7 @@ export interface BootstrapPlan {
     files: BootstrapFile[];
     tutorialUrl: string;
     runtime?: BootstrapRuntime;
+    incrementalFromTier?: 'lite';
 }
 export interface BootstrapRuntime {
     id: 'cu130' | 'cu126';

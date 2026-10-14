@@ -256,6 +256,30 @@ export function createBootstrapManager(options: BootstrapOptions) {
     } };
     async function metadata(url: string): Promise<any> { const response = await fetcher(url, { redirect: 'error', signal: AbortSignal.timeout(15000), headers: { Accept: 'application/json' } }); if (!response.ok)
         throw new Error('官方资源清单暂时无法获取'); return response.json(); }
+    async function managedLiteMarker(targetPath: string, version: string) {
+        await noLinks(targetPath);
+        await getPortableLaunchPlan(targetPath);
+        const markerPath = path.join(targetPath, 'luckyx-managed.json'), markerStat = await noLinks(markerPath);
+        if (!markerStat.isFile() || markerStat.size > 65536) throw new Error('已有环境标识无效，不能增量升级');
+        const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
+        if (marker.app !== 'luckyx. Studio' || marker.version !== version || marker.installationTier !== 'lite') throw new Error('仅支持将本应用管理的 Lite 视频版增量升级为音画版');
+        const baseline = (options.getModelFiles ?? getPinnedH3Files)('lite');
+        const markedModels = new Map(Array.isArray(marker.models) ? marker.models.map((item: any) => [item?.name, item?.sha256]) : []);
+        const markedNodes = new Map(Array.isArray(marker.nodes) ? marker.nodes.map((item: any) => [item?.name, item?.sha256]) : []);
+        for (const file of baseline) {
+            const destination = path.join(targetPath, file.relativePath), item = await inspectOwnedPath(targetPath, destination);
+            if (!item || file.kind === 'model' && (!item.isFile() || item.size !== file.sizeBytes) || file.kind === 'node' && !item.isDirectory()) throw new Error('Lite 环境资源不完整，不能直接升级：' + file.name);
+            if ((file.kind === 'node' ? markedNodes : markedModels).get(file.name) !== file.sha256) throw new Error('Lite 环境安装标识与固定清单不符：' + file.name);
+            if (file.kind === 'node') {
+                const init = await inspectOwnedPath(targetPath, path.join(destination, '__init__.py'));
+                const sourcePath = path.join(destination, '.luckyx-source.json'), sourceStat = await inspectOwnedPath(targetPath, sourcePath);
+                if (!init?.isFile() || !init.size || !sourceStat?.isFile() || sourceStat.size > 65536) throw new Error('Lite 节点不完整，不能直接升级：' + file.name);
+                const source = JSON.parse(await fs.readFile(sourcePath, 'utf8'));
+                if (source.app !== 'luckyx. Studio' || source.sha256 !== file.sha256 || source.url !== file.url) throw new Error('Lite 节点来源标识无效：' + file.name);
+            }
+        }
+        return { marker, markerPath, baseline };
+    }
     async function plan(input: {
         rootPath: string;
         hardware: BootstrapHardware;
@@ -271,13 +295,11 @@ export function createBootstrapManager(options: BootstrapOptions) {
                 throw new Error('请选择有效的绝对安装目录');
             const diskDirectory = await nearestExistingDirectory(input.rootPath);
             const targetPath = path.join(input.rootPath, 'luckyx-environment');
-            if (!allowInstalled && await exists(targetPath))
-                throw new Error('目标环境目录已存在，请使用已有环境接入或选择其他目录');
             const profile = input.profile ?? 'h3';
             if (!['environment', 'h3', 'h3-lite-audio'].includes(profile))
                 throw new Error('请选择环境或 H3 完整安装');
             let { recommendation, hardwareIssues } = recommendH3Installation(input.hardware, profile);
-            const { runtime, hardwareIssues: runtimeIssues } = selectCudaRuntime(input.hardware);
+            let { runtime, hardwareIssues: runtimeIssues } = selectCudaRuntime(input.hardware);
             hardwareIssues = [...hardwareIssues, ...runtimeIssues];
             if (allowInstalled) {
                 const pendingCheck = '已恢复上次选择的安装清单；当前设备是否适合，需要点击“检查配置与下载量”重新确认';
@@ -300,6 +322,34 @@ export function createBootstrapManager(options: BootstrapOptions) {
             }
             catch { /* verified immutable release pin remains available */ }
             const freeBytes = options.getFreeBytes ? await options.getFreeBytes(diskDirectory) : await fs.statfs(diskDirectory).then(stat => Number(stat.bavail) * Number(stat.bsize));
+            if (await exists(targetPath)) {
+                if (profile !== 'h3-lite-audio') {
+                    if (!allowInstalled) throw new Error('目标环境目录已存在，请使用已有环境接入或选择其他目录');
+                } else {
+                    const existingMarkerPath = path.join(targetPath, 'luckyx-managed.json');
+                    const existingMarkerStat = await noLinks(existingMarkerPath);
+                    if (!existingMarkerStat.isFile() || existingMarkerStat.size > 65536) throw new Error('已有环境标识无效，不能自动覆盖');
+                    const existingMarker = JSON.parse(await fs.readFile(existingMarkerPath, 'utf8'));
+                    if (existingMarker.installationTier !== 'lite') {
+                        if (!allowInstalled) throw new Error(existingMarker.installationTier === 'lite-audio' ? 'Lite 音画版已经安装' : '现有环境不是 Lite 视频版，不能增量升级');
+                    } else {
+                    const { marker } = await managedLiteMarker(targetPath, 'v0.39.0');
+                    const audio = (options.getModelFiles ?? getPinnedH3Files)('lite-audio').find(file => file.name === 'minimax_h3_audio_vae_fp32.safetensors');
+                    if (!audio) throw new Error('Lite 音频资源清单不完整');
+                    assertOfficialDownloadUrl(audio.url);
+                    const destination = path.join(targetPath, audio.relativePath), complete = await matches(destination, audio);
+                    const partial = await inspectOwnedPath(targetPath, destination + '.part');
+                    const cachedBytes = complete ? audio.sizeBytes : partial?.isFile() ? Math.min(audio.sizeBytes, partial.size) : 0;
+                    const installedRuntimeId = marker.runtimeId === 'cu126' ? 'cu126' : 'cu130';
+                    if (installedRuntimeId !== runtime.id) runtime = { ...runtime, id: installedRuntimeId, label: installedRuntimeId === 'cu126' ? 'CUDA 12.6 · 旧显卡基础环境' : 'CUDA 13.0 · RTX 运行环境', cudaVersion: installedRuntimeId === 'cu126' ? '12.6' : '13.0', compatibility: 'unknown', reason: '保留已安装的运行环境，仅增加音频模型', warnings: [...runtime.warnings, '增量升级不会替换现有 ComfyUI 或模型'] };
+                    const requiredFreeBytes = Math.max(GiB, audio.sizeBytes - cachedBytes + GiB);
+                    currentPlan = { profile, id: randomUUID(), version: 'v0.39.0', rootPath: path.resolve(input.rootPath), targetPath, files: [audio], downloadBytes: audio.sizeBytes, cachedBytes, requiredFreeBytes, freeBytes, hardwareIssues, recommendation, runtime, tutorialUrl: 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM', incrementalFromTier: 'lite' };
+                    lastInput!.selection = { tier: 'lite-audio', runtimeId: installedRuntimeId };
+                    publish({ status: 'idle', phase: 'Lite 音画增量升级', message: '复用现有 Lite 环境，仅下载并安装音频 VAE', receivedBytes: cachedBytes, totalBytes: audio.sizeBytes, tutorialUrl: currentPlan.tutorialUrl, plan: structuredClone(currentPlan), resumable: cachedBytes > 0 });
+                    persistProgress(true); await writes; return structuredClone(currentPlan);
+                    }
+                }
+            }
             let files = [environment, ...(profile !== 'environment' ? (options.getModelFiles ?? getPinnedH3Files)(recommendation.tier) : [])];
             if (profile === 'h3' && !hardwareIssues.length && !allowInstalled) {
                 const initialLabel = recommendation.label;
@@ -485,6 +535,27 @@ export function createBootstrapManager(options: BootstrapOptions) {
             }
             if (trusted.hardwareIssues.length)
                 throw new Error(trusted.hardwareIssues.join('；'));
+            if (trusted.incrementalFromTier === 'lite') {
+                const free = options.getFreeBytes ? await options.getFreeBytes(diskDirectory) : await fs.statfs(diskDirectory).then(stat => Number(stat.bavail) * Number(stat.bsize));
+                const audio = trusted.files.length === 1 && trusted.files[0].kind === 'model' ? trusted.files[0] : undefined;
+                if (!audio || audio.name !== 'minimax_h3_audio_vae_fp32.safetensors') throw new Error('Lite 音画增量清单无效，请重新检查');
+                const remaining = Math.max(GiB, audio.sizeBytes + GiB - (trusted.cachedBytes ?? 0));
+                if (free < remaining) throw new Error('磁盘空间不足，无法增加音频模型');
+                const { marker, markerPath } = await managedLiteMarker(trusted.targetPath, trusted.version);
+                const destination = path.join(trusted.targetPath, audio.relativePath);
+                for (const segment of ['ComfyUI', 'ComfyUI/models', path.dirname(audio.relativePath)]) await noLinks(path.join(trusted.targetPath, segment));
+                await download(audio, destination, signal);
+                signal.throwIfAborted();
+                if (!await matches(destination, audio, signal)) throw new Error('音频 VAE 完整性校验失败');
+                const completeFiles = (options.getModelFiles ?? getPinnedH3Files)('lite-audio');
+                const updated = { ...marker, installationTier: 'lite-audio', defaults: h3TierDefaults('lite-audio'), models: completeFiles.filter(file => file.kind === 'model').map(file => ({ name: file.name, sha256: file.sha256 })), nodes: completeFiles.filter(file => file.kind === 'node').map(file => ({ name: file.name, sha256: file.sha256, url: file.url })) };
+                const temporary = markerPath + '.' + randomUUID() + '.tmp';
+                await fs.writeFile(temporary, JSON.stringify(updated), { flag: 'wx' });
+                try { signal.throwIfAborted(); await fs.rename(temporary, markerPath); }
+                finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
+                publish({ status: 'completed', phase: 'Lite 音画升级完成', message: '已保留现有 Lite 环境并增加音频 VAE；请启动后用短片验证音画同步', installationPath: trusted.targetPath, receivedBytes: trusted.downloadBytes, completedFiles: 1, resumable: false });
+                return structuredClone(state);
+            }
             if (await exists(trusted.targetPath))
                 throw new Error('目标目录已存在，不会覆盖用户环境');
             const free = options.getFreeBytes ? await options.getFreeBytes(diskDirectory) : await fs.statfs(diskDirectory).then(stat => Number(stat.bavail) * Number(stat.bsize));
@@ -582,7 +653,7 @@ export function createBootstrapManager(options: BootstrapOptions) {
             publish({ status: 'completed', phase: '安装完成', message: trusted.profile !== 'environment' ? '环境和模型完整性通过；请启动后检查节点并进行首次试跑' : '基础环境完整性通过；请启动检查节点，H3 模型未下载', installationPath: trusted.targetPath, receivedBytes: trusted.downloadBytes });
         }
         catch (error: any) {
-            publish({ status: signal.aborted ? 'cancelled' : 'error', phase: signal.aborted ? '已取消安装' : error instanceof EnvironmentPublishError ? '文件已准备，目录配置未完成' : '安装未完成', message: signal.aborted ? '已保留下载进度，可重新检查后继续安装' : error.message, error: signal.aborted ? undefined : error.message, ...(error instanceof EnvironmentPublishError ? { currentFile: undefined } : {}), resumable: signal.aborted || !await exists(trusted.targetPath) });
+            publish({ status: signal.aborted ? 'cancelled' : 'error', phase: signal.aborted ? '已取消安装' : error instanceof EnvironmentPublishError ? '文件已准备，目录配置未完成' : '安装未完成', message: signal.aborted ? '已保留下载进度，可重新检查后继续安装' : error.message, error: signal.aborted ? undefined : error.message, ...(error instanceof EnvironmentPublishError ? { currentFile: undefined } : {}), resumable: !!trusted.incrementalFromTier || signal.aborted || !await exists(trusted.targetPath) });
         }
         return structuredClone(state);
     }
@@ -631,6 +702,14 @@ export function createBootstrapManager(options: BootstrapOptions) {
             const restoreHardware: BootstrapHardware = { gpuName: selection.runtimeId === 'cu126' ? 'NVIDIA GeForce GTX 1080' : 'NVIDIA GeForce RTX 3060', vramMb: emptyH3 ? 0 : selection.tier === 'standard' ? 32768 : selection.tier === 'balanced' ? 16384 : 8192, ramGb: emptyH3 ? 0 : selection.tier === 'standard' ? 64 : selection.tier === 'balanced' ? 32 : 16, driver: '未知' };
             const restored = await plan({ rootPath: saved.rootPath, profile: saved.profile, hardware: restoreHardware }, true);
             if (await exists(restored.targetPath)) {
+                if (restored.incrementalFromTier === 'lite') {
+                    currentPlan = restored;
+                    const audio = restored.files[0], destination = path.join(restored.targetPath, audio.relativePath);
+                    const complete = await matches(destination, audio), partial = await inspectOwnedPath(restored.targetPath, destination + '.part');
+                    const receivedBytes = complete ? audio.sizeBytes : partial?.isFile() ? Math.min(audio.sizeBytes, partial.size) : 0;
+                    publish({ status: complete ? 'cancelled' : saved.status === 'error' ? 'error' : 'cancelled', phase: complete ? '音频文件已准备，等待完成配置' : 'Lite 音画升级可继续', message: complete ? '音频 VAE 已校验，继续安装会更新环境标识' : '已保留现有 Lite 环境和音频模型下载进度', receivedBytes, totalBytes: audio.sizeBytes, installationPath: restored.targetPath, resumable: true, plan: structuredClone(restored), ...(saved.status === 'error' && !complete ? { error: '上次增量升级未完成，请重新检查后继续' } : {}) });
+                    return;
+                }
                 await noLinks(restored.targetPath);
                 await getPortableLaunchPlan(restored.targetPath);
                 const markerPath = path.join(restored.targetPath, 'luckyx-managed.json');
