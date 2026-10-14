@@ -18,6 +18,8 @@ import { canRemoveTask } from '../shared/task-policy';
 import { H3_STANDARD_MODELS } from '../shared/h3-installation';
 import { getH3Runtime } from './h3-runtime';
 import { parseNvidiaCudaVersion } from '../shared/cuda-runtime';
+import { createResourceInstaller } from './resource-installer';
+import type { ResourceInstallProgress } from '../shared/resource-installation';
 const MODEL_SPECS = H3_STANDARD_MODELS;
 const activeStatuses = ['submitting', 'queued', 'running', 'unknown'];
 export async function createStudioService(options: {
@@ -74,6 +76,16 @@ export async function createStudioService(options: {
     let closing = false, shutdownFlight: Promise<void> | undefined;
     const shutdownController = new AbortController();
     const bootstrap = options.bootstrapManager ?? createBootstrapManager({ dataDir: options.dataDir, fetch: options.bootstrapFetch, sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe'), getHardware: async () => { await hardwareReady; await detectHardware(); return structuredClone(snapshot.hardware); } });
+    let resourceProgress: ResourceInstallProgress | undefined;
+    let resourceFlight: Promise<void> | undefined;
+    let resourceController: AbortController | undefined;
+    const resourceInstaller = createResourceInstaller({
+        installationPath: () => snapshot.settings.installationPath,
+        modelPath: () => snapshot.settings.modelPath,
+        sevenZipPath: options.sevenZipPath ?? path.resolve('node_modules/7zip-bin/win/x64/7za.exe'),
+        fetch: options.bootstrapFetch,
+        onProgress: progress => { resourceProgress = progress; }
+    });
     let bootstrapPlan: BootstrapPlan | undefined;
     let bootstrapFlight: Promise<void> | undefined;
     let bootstrapConnectionError: string | undefined;
@@ -638,6 +650,7 @@ export async function createStudioService(options: {
             socket?.close();
             shutdownController.abort();
             bootstrap.cancel();
+            resourceController?.abort();
             const ownedChild = child;
             if (ownedChild && child === ownedChild && ownedChild.exitCode === null && ownedChild.signalCode === null) {
                 const exit = new Promise<void>(resolve => { ownedChild.once('exit', () => resolve()); ownedChild.once('error', () => resolve()); });
@@ -651,6 +664,7 @@ export async function createStudioService(options: {
             await initialization?.catch(() => {});
             await refreshFlight?.catch(() => {});
             await bootstrapFlight?.catch(() => {});
+            await resourceFlight?.catch(() => {});
             await startFlight?.catch(() => {});
             await submitChain;
             if (ownedChild) {
@@ -803,6 +817,22 @@ export async function createStudioService(options: {
                     return { engine: snapshot.engine, issues: snapshot.templates[0].issues, hardware: snapshot.hardware };
                 case 'template.validate': return validate();
                 case 'resource.scan': return scan();
+                case 'resource.catalog': return resourceInstaller.list();
+                case 'resource.install.status': return resourceProgress ? structuredClone(resourceProgress) : undefined;
+                case 'resource.install.cancel': resourceController?.abort(); return resourceProgress;
+                case 'resource.install.start': {
+                    const id = (payload as { id?: unknown } | null)?.id;
+                    if (typeof id !== 'string' || !id) throw new Error('请选择要安装的资源');
+                    if (resourceFlight) throw new Error('已有资源正在安装');
+                    await refresh();
+                    if (child || ['ready', 'busy'].includes(snapshot.engine.status) || snapshot.tasks.some(t => activeStatuses.includes(t.status))) throw new Error('请先停止引擎并完成当前任务，再安装模型或节点');
+                    resourceController = new AbortController();
+                    resourceProgress = { id, status: 'idle', receivedBytes: 0, totalBytes: 0, message: '准备安装' };
+                    const controller = resourceController;
+                    resourceFlight = resourceInstaller.install(id, controller.signal).then(result => { resourceProgress = result; })
+                        .finally(() => { resourceFlight = undefined; if (resourceController === controller) resourceController = undefined; });
+                    return { started: true };
+                }
                 case 'logs.clear':
                     snapshot.logs = [];
                     emit();

@@ -4,27 +4,48 @@ import path from 'node:path';
 import type { BootstrapFile } from '../shared/bootstrap';
 import type { InstallableResourceCategory, InstallableResourceSummary, ResourceInstallProgress } from '../shared/resource-installation';
 import { assertOfficialDownloadUrl, defaultRunner, validateArchiveListing, type BootstrapRunResult } from './bootstrap';
-import { getPinnedH3Files, H3_COMMUNITY_NODES } from './h3-downloads';
+import { getPinnedH3Files } from './h3-downloads';
 
-interface CatalogEntry {
+export interface InstallableResourceCatalogEntry {
     id: string;
     category: InstallableResourceCategory;
+    displayName: string;
+    purpose: string;
+    source: string;
+    compatibility: string;
     file: BootstrapFile;
 }
 
-function pinned(name: string): BootstrapFile {
-    const file = getPinnedH3Files('standard').find(candidate => candidate.name === name);
-    if (!file) throw new Error('固定资源清单不完整：' + name);
-    return file;
+function categoryFor(file: BootstrapFile): InstallableResourceCategory {
+    if (file.kind === 'node') return 'custom-node';
+    const folder = path.dirname(file.relativePath).replaceAll('\\', '/').split('/').at(-1);
+    const categories: Record<string, InstallableResourceCategory> = {
+        diffusion_models: 'diffusion-model', text_encoders: 'text-encoder', vae: 'vae',
+        loras: 'lora', clip_projections: 'clip-projection', model_patches: 'model-patch'
+    };
+    const category = categories[folder ?? ''];
+    if (!category) throw new Error('固定资源目录没有对应类型：' + file.relativePath);
+    return category;
 }
 
-const catalog: readonly CatalogEntry[] = [
-    { id: 'h3-turbo-lora', category: 'lora', file: pinned('minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors') },
-    { id: 'h3-clipproj-node', category: 'custom-node', file: H3_COMMUNITY_NODES.find(file => file.id === 'clipproj')! },
-    { id: 'h3-spectrum-node', category: 'custom-node', file: H3_COMMUNITY_NODES.find(file => file.id === 'spectrum')! }
-];
+const allPinnedH3Files = ['lite', 'lite-audio', 'balanced', 'standard']
+    .flatMap(tier => getPinnedH3Files(tier as 'lite' | 'lite-audio' | 'balanced' | 'standard'))
+    .filter((file, index, files) => files.findIndex(candidate => candidate.url === file.url && candidate.sha256 === file.sha256) === index);
+export const PINNED_RESOURCE_CATALOG: readonly InstallableResourceCatalogEntry[] = allPinnedH3Files.map(file => ({
+    id: file.name === 'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors' ? 'h3-turbo-lora'
+        : file.kind === 'node' ? `h3-${file.id}-node` : `h3-${categoryFor(file)}-${file.sha256.slice(0, 12)}`,
+    category: categoryFor(file),
+    displayName: file.kind === 'node' ? file.id === 'clipproj' ? 'H3 ClipProj 节点' : 'H3 Spectrum 加速节点'
+        : file.name.replace(/\.safetensors$/i, ''),
+    purpose: file.kind === 'node' ? 'MiniMax H3 Lite 工作流所需自定义节点'
+        : categoryFor(file) === 'lora' ? 'MiniMax H3 官方四步加速 LoRA'
+        : `MiniMax H3 ${categoryFor(file)}`,
+    source: file.url.includes('/Comfy-Org/') ? 'Comfy 官方固定版本' : '社区固定版本',
+    compatibility: file.kind === 'node' || /w4a8|qwen3vl_4b|ClipProj/i.test(file.name) ? 'MiniMax H3 Lite' : 'MiniMax H3 官方工作流',
+    file
+}));
 
-function entryFor(id: unknown): CatalogEntry {
+function entryFor(catalog: readonly InstallableResourceCatalogEntry[], id: unknown): InstallableResourceCatalogEntry {
     if (typeof id !== 'string') throw new Error('请选择要安装的资源');
     const entry = catalog.find(candidate => candidate.id === id);
     if (!entry) throw new Error('资源不在 luckyx. Studio 固定清单中');
@@ -58,6 +79,40 @@ async function ensureSafeDirectory(root: string, relative = ''): Promise<string>
     return target;
 }
 
+async function assertComfyInstallation(root: string): Promise<void> {
+    await ensureSafeDirectory(root);
+    const main = await regular(path.join(root, 'ComfyUI', 'main.py'));
+    if (!main?.isFile() || !main.size) throw new Error('当前目录不是可用的 ComfyUI 安装环境');
+}
+
+function modelRelativePath(entry: InstallableResourceCatalogEntry): string {
+    const normalized = entry.file.relativePath.replaceAll('\\', '/');
+    const prefix = 'ComfyUI/models/';
+    if (!normalized.startsWith(prefix) || normalized.length === prefix.length) throw new Error('模型资源不在固定模型目录中');
+    return normalized.slice(prefix.length);
+}
+
+function relativeTarget(entry: InstallableResourceCatalogEntry): string {
+    return entry.category === 'custom-node' ? entry.file.relativePath.replaceAll('\\', '/') : modelRelativePath(entry);
+}
+
+async function resourceTarget(entry: InstallableResourceCatalogEntry, installationRoot: string, modelRoot: string): Promise<{ root: string; relative: string; target: string }> {
+    const root = entry.category === 'custom-node' ? installationRoot : modelRoot;
+    const relative = relativeTarget(entry);
+    await ensureSafeDirectory(root);
+    return { root, relative, target: path.join(root, relative) };
+}
+
+async function assertNoLinksTree(directory: string): Promise<void> {
+    const stat = await regular(directory);
+    if (!stat?.isDirectory()) throw new Error('解压结果不是目录');
+    for (const item of await fs.readdir(directory)) {
+        const child = path.join(directory, item), childStat = await regular(child);
+        if (!childStat || (!childStat.isDirectory() && !childStat.isFile())) throw new Error('节点压缩包包含不支持的文件类型');
+        if (childStat.isDirectory()) await assertNoLinksTree(child);
+    }
+}
+
 async function hashMatches(file: string, expected: BootstrapFile, signal?: AbortSignal): Promise<boolean> {
     const stat = await regular(file);
     if (!stat) return false;
@@ -81,7 +136,7 @@ async function request(fetcher: typeof globalThis.fetch, initialUrl: string, ini
     throw new Error('下载来源重定向次数过多');
 }
 
-async function download(entry: CatalogEntry, destination: string, fetcher: typeof globalThis.fetch, signal: AbortSignal, publish: (state: Partial<ResourceInstallProgress>) => void) {
+async function download(entry: InstallableResourceCatalogEntry, destination: string, fetcher: typeof globalThis.fetch, signal: AbortSignal, publish: (state: Partial<ResourceInstallProgress>) => void) {
     if (await hashMatches(destination, entry.file, signal)) return;
     if (await lstat(destination)) throw new Error('目标位置已有不同文件，不会自动覆盖：' + entry.file.name);
     const partial = destination + '.part';
@@ -126,21 +181,27 @@ async function download(entry: CatalogEntry, destination: string, fetcher: typeo
 
 export interface ResourceInstallerOptions {
     installationPath: () => string;
+    modelPath: () => string;
     sevenZipPath: string;
     fetch?: typeof globalThis.fetch;
     runner?: (exe: string, args: string[], options: { signal: AbortSignal; cwd?: string }) => Promise<BootstrapRunResult>;
     onProgress?: (state: ResourceInstallProgress) => void;
+    catalog?: readonly InstallableResourceCatalogEntry[];
 }
 
 export function createResourceInstaller(options: ResourceInstallerOptions) {
     const fetcher = options.fetch ?? globalThis.fetch, runner = options.runner ?? defaultRunner;
+    const catalog = options.catalog ?? PINNED_RESOURCE_CATALOG;
+    if (new Set(catalog.map(entry => entry.id)).size !== catalog.length) throw new Error('资源清单包含重复 ID');
     const active = new Map<string, Promise<ResourceInstallProgress>>();
 
-    async function installed(entry: CatalogEntry, root: string): Promise<boolean> {
-        const target = path.join(root, entry.file.relativePath);
+    async function installed(entry: InstallableResourceCatalogEntry, installationRoot: string, modelRoot: string): Promise<boolean> {
+        const { target } = await resourceTarget(entry, installationRoot, modelRoot);
         if (entry.category !== 'custom-node') return hashMatches(target, entry.file);
         const stat = await regular(target);
         if (!stat?.isDirectory()) return false;
+        const init = await regular(path.join(target, '__init__.py'));
+        if (!init?.isFile() || !init.size) return false;
         const marker = await regular(path.join(target, '.luckyx-source.json'));
         if (!marker?.isFile() || marker.size > 65536) return false;
         let source: any;
@@ -150,24 +211,31 @@ export function createResourceInstaller(options: ResourceInstallerOptions) {
     }
 
     async function list(): Promise<InstallableResourceSummary[]> {
-        const root = path.resolve(options.installationPath());
-        await ensureSafeDirectory(root);
-        return Promise.all(catalog.map(async entry => ({ id: entry.id, name: entry.file.name, category: entry.category, sizeBytes: entry.file.sizeBytes, status: await installed(entry, root) ? 'installed' as const : 'missing' as const })));
+        const installationRoot = path.resolve(options.installationPath()), modelRoot = path.resolve(options.modelPath());
+        await assertComfyInstallation(installationRoot);
+        await ensureSafeDirectory(modelRoot);
+        return Promise.all(catalog.map(async entry => ({
+            id: entry.id, name: entry.file.name, displayName: entry.displayName, category: entry.category,
+            relativeTarget: relativeTarget(entry), purpose: entry.purpose, source: entry.source,
+            compatibility: entry.compatibility, sizeBytes: entry.file.sizeBytes,
+            status: await installed(entry, installationRoot, modelRoot) ? 'installed' as const : 'missing' as const
+        })));
     }
 
     async function install(id: unknown, signal = new AbortController().signal): Promise<ResourceInstallProgress> {
-        const entry = entryFor(id), existing = active.get(entry.id);
+        const entry = entryFor(catalog, id), existing = active.get(entry.id);
         if (existing) return existing;
         let state: ResourceInstallProgress = { id: entry.id, status: 'idle', receivedBytes: 0, totalBytes: entry.file.sizeBytes, message: '准备安装' };
         const publish = (patch: Partial<ResourceInstallProgress>) => { state = { ...state, ...patch }; options.onProgress?.({ ...state }); };
         const work = (async () => {
             try {
-                const root = path.resolve(options.installationPath());
-                await ensureSafeDirectory(root);
-                if (await installed(entry, root)) { publish({ status: 'completed', receivedBytes: entry.file.sizeBytes, message: '资源已安装' }); return state; }
-                const destination = path.join(root, entry.file.relativePath);
+                const root = path.resolve(options.installationPath()), modelRoot = path.resolve(options.modelPath());
+                await assertComfyInstallation(root);
+                await ensureSafeDirectory(modelRoot);
+                if (await installed(entry, root, modelRoot)) { publish({ status: 'completed', receivedBytes: entry.file.sizeBytes, message: '资源已安装' }); return state; }
+                const resource = await resourceTarget(entry, root, modelRoot), destination = resource.target;
                 if (entry.category !== 'custom-node') {
-                    await ensureSafeDirectory(root, path.dirname(entry.file.relativePath));
+                    await ensureSafeDirectory(resource.root, path.dirname(resource.relative));
                     await download(entry, destination, fetcher, signal, publish);
                 } else {
                     const cache = await ensureSafeDirectory(root, '.luckyx-resources/nodes');
@@ -182,14 +250,22 @@ export function createResourceInstaller(options: ResourceInstallerOptions) {
                         if (item !== entry.file.archiveRoot && !item.startsWith(entry.file.archiveRoot + '/')) throw new Error('节点压缩包包含固定目录之外的内容');
                     }
                     const extraction = await ensureSafeDirectory(root, '.luckyx-resources/unpacked-' + entry.file.id + '-' + randomUUID());
-                    await runner(options.sevenZipPath, ['x', archive, '-o' + extraction, '-y'], { signal });
-                    const source = path.join(extraction, entry.file.archiveRoot!);
-                    const init = await regular(path.join(source, '__init__.py'));
-                    if (!init?.isFile() || !init.size) throw new Error('节点压缩包缺少入口文件');
-                    await ensureSafeDirectory(root, path.dirname(entry.file.relativePath));
-                    if (await lstat(destination)) throw new Error('目标位置已有其他节点，不会自动覆盖：' + entry.file.name);
-                    await fs.cp(source, destination, { recursive: true, force: false, errorOnExist: true });
-                    await fs.writeFile(path.join(destination, '.luckyx-source.json'), JSON.stringify({ app: 'luckyx. Studio', url: entry.file.url, sha256: entry.file.sha256 }), { flag: 'wx' });
+                    try {
+                        await runner(options.sevenZipPath, ['x', archive, '-o' + extraction, '-y'], { signal });
+                        await assertNoLinksTree(extraction);
+                        const source = path.join(extraction, entry.file.archiveRoot!);
+                        const init = await regular(path.join(source, '__init__.py'));
+                        if (!init?.isFile() || !init.size) throw new Error('节点压缩包缺少入口文件');
+                        await ensureSafeDirectory(root, path.dirname(entry.file.relativePath));
+                        if (await lstat(destination)) throw new Error('目标位置已有其他节点，不会自动覆盖：' + entry.file.name);
+                        await fs.cp(source, destination, { recursive: true, force: false, errorOnExist: true });
+                        await assertNoLinksTree(destination);
+                        await fs.writeFile(path.join(destination, '.luckyx-source.json'), JSON.stringify({ app: 'luckyx. Studio', url: entry.file.url, sha256: entry.file.sha256 }), { flag: 'wx' });
+                    } finally {
+                        const cacheRoot = path.resolve(root, '.luckyx-resources'), resolved = path.resolve(extraction);
+                        if (path.dirname(resolved) !== cacheRoot || !path.basename(resolved).startsWith('unpacked-' + entry.file.id + '-')) throw new Error('临时解压目录超出资源缓存');
+                        await fs.rm(resolved, { recursive: true, force: true });
+                    }
                 }
                 publish({ status: 'completed', receivedBytes: entry.file.sizeBytes, message: '安装完成：' + entry.file.name });
                 return state;

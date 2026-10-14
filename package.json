@@ -1,6 +1,6 @@
 {
   "name": "luckyx-studio",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "luckyx. Studio — 本地视频工作流启动器",
   "private": true,
   "type": "module",

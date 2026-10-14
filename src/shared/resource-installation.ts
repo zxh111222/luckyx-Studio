@@ -1,9 +1,14 @@
-export type InstallableResourceCategory = 'lora' | 'diffusion-model' | 'vae' | 'text-encoder' | 'custom-node';
+export type InstallableResourceCategory = 'diffusion-model' | 'text-encoder' | 'vae' | 'lora' | 'clip-projection' | 'model-patch' | 'custom-node';
 
 export interface InstallableResourceSummary {
     id: string;
     name: string;
+    displayName: string;
     category: InstallableResourceCategory;
+    relativeTarget: string;
+    purpose: string;
+    source: string;
+    compatibility: string;
     sizeBytes: number;
     status: 'missing' | 'installed';
 }
