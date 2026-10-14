@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
+import fsNode, { promises as fs } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
@@ -31,7 +32,7 @@ async function fixture(t:any, overrides:{body?:(url:string,init?:RequestInit)=>P
   return overrides.body ? overrides.body(url,init) : new Response(archive);
  };
  const modelFiles=(tier:Parameters<typeof getPinnedH3Files>[0])=>getPinnedH3Files(tier).map(file=>({...file,sizeBytes:archive.length,sha256:digest(archive)}));
- const options={dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,getModelFiles:modelFiles,getHardware:async()=>overrides.getHardware?.()??hardware,renameEnvironmentDirectory:overrides.renameEnvironmentDirectory,
+ const options={dataDir:path.join(root,'data'),sevenZipPath:'mock-7za.exe',fetch:fetcher as typeof fetch,getFreeBytes:async()=>overrides.free?.()??1024**4,getModelFiles:modelFiles,getEnvironmentFile:(id:Parameters<typeof getPinnedEnvironmentFile>[0])=>({...getPinnedEnvironmentFile(id),sizeBytes:archive.length,sha256:digest(archive)}),getHardware:async()=>overrides.getHardware?.()??hardware,renameEnvironmentDirectory:overrides.renameEnvironmentDirectory,
   runner:async(exe:string,args:string[])=>{runs.push([exe,...args]);const node=getPinnedH3Files('lite').find(file=>file.kind==='node'&&args.includes(path.join(root,'.luckyx-bootstrap/nodes',file.name)));
    if(args[0]==='l')return{stdout:overrides.unsafeListing?'Path = ../escape':node?'----------\nPath = '+node.archiveRoot+'/__init__.py':'----------\nPath = ComfyUI_windows_portable/python_embeded/python.exe\nPath = ComfyUI_windows_portable/ComfyUI/main.py'};
    if(args[0]==='x'){const extracted=args.find(a=>a.startsWith('-o'))!.slice(2);if(node)await put(extracted,node.archiveRoot+'/__init__.py');else{await put(extracted,'ComfyUI_windows_portable/python_embeded/python.exe');await put(extracted,'ComfyUI_windows_portable/ComfyUI/main.py');}return{stdout:''};}
@@ -222,7 +223,7 @@ test('旧GTX基础环境使用官方cu126独立缓存并实际运算，已有cu1
 test('旧驱动恢复已下载H3模型显示保留，升级重新检查后直接校验无需重下模型',async t=>{
  let actual:BootstrapHardware={...hardware};const f=await fixture(t,{getHardware:()=>actual});const p=await f.manager.plan({rootPath:f.root,hardware});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'),archive);
  await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/python_embeded/python.exe');await put(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable/ComfyUI/main.py');for(const file of p.files.slice(1)){const destination=path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable',file.relativePath);await fs.mkdir(path.dirname(destination),{recursive:true});await fs.writeFile(destination,archive);}
- await f.manager.dispose();actual={...hardware,driver:'546.30',cudaVersion:'12.3'};const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;let state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.resumable,true);assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(state.plan!.cachedBytes,p.downloadBytes);assert.equal(state.phase,'文件已准备，等待环境配置');assert.ok(state.plan!.hardwareIssues.length>0);assert.match(state.message,/保留.*580/);
+ await f.manager.dispose();actual={...hardware,driver:'546.30',cudaVersion:'12.3'};const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;let state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.resumable,true);assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(state.plan!.cachedBytes,p.downloadBytes);assert.equal(state.phase,'文件已准备，等待环境配置');assert.ok(state.plan!.hardwareIssues.length>0);assert.match(state.message,/保留.*重新检查/);
  actual={...hardware};const resumed=await restored.plan({rootPath:f.root,hardware:actual});assert.equal(resumed.cachedBytes,p.downloadBytes);assert.equal(restored.snapshot().receivedBytes,p.downloadBytes);const before=f.requests.length;state=await restored.start(resumed);assert.equal(state.status,'completed');assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(f.requests.length,before);for(const file of resumed.files.filter(file=>file.kind==='model'))assert.equal(digest(await fs.readFile(path.join(p.targetPath,file.relativePath))),digest(archive));
 });
 
@@ -248,6 +249,39 @@ test('全部文件下载后目录权限错误保留模型，关闭占用再继�
  assert.equal(state.status,'error');assert.equal(state.phase,'文件已准备，目录配置未完成');assert.equal(state.currentFile,undefined);assert.match(state.error!,/占用.*权限.*保留全部下载和模型.*继续配置环境/);assert.doesNotMatch(state.error!,/raw model path|CUDA|驱动/);assert.equal(state.resumable,true);assert.equal(state.receivedBytes,p.downloadBytes);assert.equal(attempts,6);
  for(const file of p.files.filter(file=>file.kind==='model'))assert.equal(digest(await fs.readFile(path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable',file.relativePath))),file.sha256);
  locked=false;const resumed=await f.manager.plan({rootPath:f.root,hardware});assert.equal(resumed.cachedBytes,p.downloadBytes);const before=f.requests.length;state=await f.manager.start(resumed);assert.equal(state.status,'completed');assert.equal(f.requests.length,before);assert.equal(attempts,7);assert.equal(state.receivedBytes,p.downloadBytes);
+});
+
+test('已安装环境恢复不访问网络、不遍历Python树，仍检查模型大小并保持恢复记录只读',async t=>{
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware});await f.manager.start(p);await f.manager.dispose();const record=await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8');const before=f.requests.length;
+ const readDirectory=t.mock.method(fs,'readdir',async()=>{throw new Error('startup must not traverse environment tree');});
+ let restored:ReturnType<typeof createBootstrapManager>|undefined;
+ try{restored=createBootstrapManager({...f.options,getHardware:async()=>{throw new Error('startup must not wait for hardware probe');}});await restored.ready;const state=restored.snapshot();assert.equal(state.status,'completed');assert.equal(state.installationPath,p.targetPath);assert.equal(f.requests.length,before);assert.equal(readDirectory.mock.calls.length,0);assert.equal(await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8'),record);}
+ finally{readDirectory.mock.restore();await restored?.dispose();}
+});
+
+test('缓存恢复不整包计算SHA、读取权重或遍历目录；显式继续仍执行完整SHA验证',async t=>{
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));await fs.writeFile(path.join(f.root,'.luckyx-bootstrap/portable.7z'),Buffer.alloc(archive.length,120));await f.manager.dispose();const before=f.requests.length;
+ const readDirectory=t.mock.method(fs,'readdir',async()=>{throw new Error('startup must not traverse cache tree');});const stream=t.mock.method(fsNode,'createReadStream',()=>{throw new Error('startup must not read archive bytes');});syncBuiltinESMExports();
+ let restored:ReturnType<typeof createBootstrapManager>|undefined;
+ try{restored=createBootstrapManager(f.options);await restored.ready;const state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.phase,'环境包已下载，等待解压');assert.equal(state.receivedBytes,archive.length);assert.equal(f.requests.length,before);assert.equal(readDirectory.mock.calls.length,0);assert.equal(stream.mock.calls.length,0);}
+ finally{readDirectory.mock.restore();stream.mock.restore();syncBuiltinESMExports();}
+ try{const checked=await restored!.plan({rootPath:f.root,hardware,profile:'environment'});const state=await restored!.start(checked);assert.equal(state.status,'error');assert.match(state.error!,/完整性不符/);assert.equal(f.runs.length,0);}
+ finally{await restored?.dispose();}
+});
+
+test('Lite完成环境快速恢复仍拒绝缺少节点源码标识或模型大小不符',async t=>{
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware:{...hardware,vramMb:8192,ramGb:16}});await f.manager.start(p);await f.manager.dispose();const node=p.files.find(file=>file.kind==='node')!;await fs.writeFile(path.join(p.targetPath,node.relativePath,'.luckyx-source.json'),JSON.stringify({app:'other',sha256:node.sha256,url:node.url}));const before=f.requests.length;
+ const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;assert.equal(restored.snapshot().status,'error');assert.match(restored.snapshot().phase,/资源不完整/);assert.equal(f.requests.length,before);
+});
+
+test('快速缓存恢复不遍历Python但仍拒绝必要资源路径上的junction',async t=>{
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware,profile:'environment'});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));const external=path.join(f.root,'external-environment');await fs.mkdir(external);await fs.symlink(external,path.join(f.root,'.luckyx-bootstrap/unpacked'),'junction');await f.manager.dispose();const before=f.requests.length;
+ const restored=createBootstrapManager(f.options);t.after(()=>restored.dispose());await restored.ready;assert.equal(restored.snapshot().status,'error');assert.match(restored.snapshot().error!,/目录链接/);assert.equal(f.requests.length,before);
+});
+
+test('旧版无selection的缓存通过固定模型文件名恢复原档位，不等待真实硬件探测',async t=>{
+ const f=await fixture(t);const p=await f.manager.plan({rootPath:f.root,hardware});await put(f.root,'.luckyx-bootstrap/owner.json',JSON.stringify({app:'luckyx. Studio',target:p.targetPath,version:p.version}));const diffusion=p.files.find(file=>file.kind==='model')!;const destination=path.join(f.root,'.luckyx-bootstrap/unpacked/ComfyUI_windows_portable',diffusion.relativePath);await fs.mkdir(path.dirname(destination),{recursive:true});await fs.writeFile(destination,archive);await f.manager.dispose();const saved=JSON.parse(await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8'));delete saved.selection;await fs.writeFile(path.join(f.root,'data/bootstrap-progress.json'),JSON.stringify(saved));const before=f.requests.length;
+ const restored=createBootstrapManager({...f.options,getHardware:async()=>{throw new Error('startup must not invoke nvidia-smi');}});t.after(()=>restored.dispose());await restored.ready;const state=restored.snapshot();assert.equal(state.status,'cancelled');assert.equal(state.plan!.recommendation.tier,p.recommendation.tier);assert.equal(state.plan!.runtime!.id,p.runtime!.id);assert.equal(state.plan!.runtime!.compatibility,'unknown');assert.equal(state.receivedBytes,archive.length);assert.equal(f.requests.length,before);assert.equal(JSON.parse(await fs.readFile(path.join(f.root,'data/bootstrap-progress.json'),'utf8')).selection,undefined);
 });
 
 test('最终GPU检查失败保留全量下载，但不继续显示最后一个模型文件作为故障对象',async t=>{

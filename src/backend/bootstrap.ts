@@ -36,6 +36,7 @@ export interface BootstrapOptions {
     getFreeBytes?: (directory: string) => Promise<number>;
     getModelFiles?: typeof getPinnedH3Files;
     getHardware?: () => Promise<BootstrapHardware>;
+    getEnvironmentFile?: typeof getPinnedEnvironmentFile;
     renameEnvironmentDirectory?: typeof fs.rename;
 }
 export function assertOfficialDownloadUrl(value: string): string {
@@ -107,14 +108,21 @@ async function nearestExistingDirectory(directory: string): Promise<string> {
     }
     return candidate;
 }
-async function ownedResumeBytes(rootPath: string, targetPath: string, version: string): Promise<number> {
+async function validateResumeOwner(rootPath: string, targetPath: string, version: string): Promise<boolean> {
     const cache = path.join(rootPath, '.luckyx-bootstrap');
-    if (!await exists(cache)) return 0;
-    await noLinks(cache);
+    if (!await exists(cache)) return false;
+    if (!(await noLinks(cache)).isDirectory()) throw new Error('暂存路径不是目录，不能覆盖');
     const marker = path.join(cache, 'owner.json');
-    if (!await exists(marker) || !(await noLinks(marker)).isFile()) throw new Error('暂存目录缺少本应用标识，不能覆盖');
+    if (!await exists(marker)) throw new Error('暂存目录缺少本应用标识，不能覆盖');
+    const markerStat = await noLinks(marker);
+    if (!markerStat.isFile() || markerStat.size > 65536) throw new Error('暂存目录缺少有效的本应用标识，不能覆盖');
     const owner = JSON.parse(await fs.readFile(marker, 'utf8'));
     if (owner.app !== 'luckyx. Studio' || owner.target !== targetPath || owner.version !== version) throw new Error('暂存目录不属于本次安装，不能覆盖');
+    return true;
+}
+async function ownedResumeBytes(rootPath: string, targetPath: string, version: string): Promise<number> {
+    if (!await validateResumeOwner(rootPath, targetPath, version)) return 0;
+    const cache = path.join(rootPath, '.luckyx-bootstrap');
     async function count(directory: string): Promise<number> {
         let bytes = 0;
         for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -125,8 +133,25 @@ async function ownedResumeBytes(rootPath: string, targetPath: string, version: s
     }
     return count(cache);
 }
-async function downloadedPlanBytes(rootPath: string, targetPath: string, version: string, files: BootstrapFile[]): Promise<number> {
-    await ownedResumeBytes(rootPath, targetPath, version);
+/** Inspect only the requested path chain without walking Python or reading weight bytes. */
+async function inspectOwnedPath(root: string, candidate: string) {
+    const relative = path.relative(root, candidate);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('安装资源路径超出所属目录');
+    const segments = relative ? relative.split(path.sep) : [];
+    let current = root;
+    try {
+        let stat = await noLinks(current);
+        for (const segment of segments) {
+            if (!stat.isDirectory()) throw new Error('安装资源的父路径不是目录');
+            current = path.join(current, segment);
+            stat = await noLinks(current);
+        }
+        return stat;
+    } catch (error: any) { if (error.code === 'ENOENT') return undefined; throw error; }
+}
+async function downloadedPlanBytes(rootPath: string, targetPath: string, version: string, files: BootstrapFile[], quick = false): Promise<number> {
+    if (quick) { if (!await validateResumeOwner(rootPath, targetPath, version)) return 0; }
+    else await ownedResumeBytes(rootPath, targetPath, version);
     const cache = path.join(rootPath, '.luckyx-bootstrap');
     if (!await exists(cache)) return 0;
     const cachePaths = environmentCachePaths(files[0]);
@@ -134,16 +159,17 @@ async function downloadedPlanBytes(rootPath: string, targetPath: string, version
     for (const file of files) {
         const destination = file.kind === 'environment' ? path.join(cache, cachePaths.archiveName) : file.kind === 'node' ? path.join(cache, 'nodes', file.name) : path.join(cache, cachePaths.extractedName, 'ComfyUI_windows_portable', file.relativePath);
         for (const candidate of [destination, destination + '.part']) {
-            if (!await exists(candidate)) continue;
-            const stat = await noLinks(candidate);
+            const stat = quick ? await inspectOwnedPath(cache, candidate) : await exists(candidate) ? await noLinks(candidate) : undefined;
+            if (!stat) continue;
             if (stat.isFile()) bytes += Math.min(file.sizeBytes, stat.size);
             break;
         }
     }
     return bytes;
 }
-async function reusablePlanBytes(rootPath: string, targetPath: string, version: string, files: BootstrapFile[]): Promise<number> {
-    let bytes = await downloadedPlanBytes(rootPath, targetPath, version, files);
+async function reusablePlanBytes(rootPath: string, targetPath: string, version: string, files: BootstrapFile[], quick = false): Promise<number> {
+    let bytes = await downloadedPlanBytes(rootPath, targetPath, version, files, quick);
+    if (quick) return bytes; // Startup gives a conservative estimate; start rechecks actual free space.
     const cache = path.join(rootPath, '.luckyx-bootstrap');
     if (!await exists(cache)) return bytes;
     const cachePaths = environmentCachePaths(files[0]);
@@ -213,11 +239,11 @@ export function createBootstrapManager(options: BootstrapOptions) {
     let state: BootstrapState = { status: 'idle', phase: '准备安装', message: '先检查硬件、磁盘和官方资源', receivedBytes: 0, totalBytes: 0, completedFiles: 0, tutorialUrl };
     const listeners = new Set<(value: BootstrapState) => void>();
     let currentPlan: BootstrapPlan | undefined, controller: AbortController | undefined, active: Promise<BootstrapState> | undefined;
-    let lastInput: { rootPath: string; profile: 'environment' | 'h3' } | undefined;
-    let persistedStatus = '', writes = Promise.resolve();
+    let lastInput: { rootPath: string; profile: 'environment' | 'h3'; selection?: { tier: BootstrapPlan['recommendation']['tier']; runtimeId: 'cu130' | 'cu126' } } | undefined;
+    let persistedStatus = '', writes = Promise.resolve(), restoring = true;
     const progressPath = path.join(options.dataDir, 'bootstrap-progress.json');
     function persistProgress(force = false) {
-        if (!lastInput || (!force && persistedStatus === state.status)) return;
+        if (restoring || !lastInput || (!force && persistedStatus === state.status)) return;
         persistedStatus = state.status;
         const record = JSON.stringify({ app: 'luckyx. Studio', schemaVersion: 1, ...lastInput, status: state.status });
         writes = writes.catch(() => {}).then(async () => { await fs.mkdir(options.dataDir, { recursive: true }); const temporary = progressPath + '.' + randomUUID() + '.tmp'; await fs.writeFile(temporary, record, { flag: 'wx' }); await fs.rename(temporary, progressPath); });
@@ -253,9 +279,18 @@ export function createBootstrapManager(options: BootstrapOptions) {
             let { recommendation, hardwareIssues } = recommendH3Installation(input.hardware, profile);
             const { runtime, hardwareIssues: runtimeIssues } = selectCudaRuntime(input.hardware);
             hardwareIssues = [...hardwareIssues, ...runtimeIssues];
-            const environment = getPinnedEnvironmentFile(runtime.id);
+            if (allowInstalled) {
+                const pendingCheck = '已恢复上次选择的安装清单；当前设备是否适合，需要点击“检查配置与下载量”重新确认';
+                recommendation.reason = pendingCheck;
+                recommendation.warnings = ['保留上次选择的模型方案，尚未重新验证当前设备', ...recommendation.warnings.filter(value => !value.includes('按硬件估算') && !value.includes('CUDA 13 需要'))];
+                runtime.compatibility = 'unknown';
+                runtime.reason = pendingCheck;
+                runtime.warnings = ['已恢复上次选择的运行包，当前驱动兼容性待重新检查'];
+                hardwareIssues = [pendingCheck];
+            }
+            const environment = (options.getEnvironmentFile ?? getPinnedEnvironmentFile)(runtime.id);
             // Query the fixed official release; digest-less responses can never change the trusted package.
-            try {
+            if (!allowInstalled) try {
                 const release = await metadata('https://api.github.com/repos/Comfy-Org/ComfyUI/releases/tags/v0.39.0');
                 const asset = release.assets?.find((item: any) => item.name === environment.name);
                 if (asset && /^sha256:[a-f0-9]{64}$/.test(asset.digest) && Number.isSafeInteger(asset.size) && asset.size > 0 && asset.browser_download_url === environment.url) {
@@ -289,9 +324,11 @@ export function createBootstrapManager(options: BootstrapOptions) {
                 if (!/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes <= 0 || /[\x00:]/.test(file.relativePath) || /^[\\/]/.test(file.relativePath) || file.relativePath.split(/[\\/]/).some(segment => segment === '..')) throw new Error('安装文件清单无效');
             }
             const downloadBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
-            const requiredFreeBytes = Math.max(5 * GiB, downloadBytes + environment.sizeBytes * 4 + 5 * GiB - await reusablePlanBytes(input.rootPath, targetPath, 'v0.39.0', files));
-            const cachedBytes = await downloadedPlanBytes(input.rootPath, targetPath, 'v0.39.0', files);
+            const cachedBytes = await downloadedPlanBytes(input.rootPath, targetPath, 'v0.39.0', files, allowInstalled);
+            const reusableBytes = allowInstalled ? cachedBytes : await reusablePlanBytes(input.rootPath, targetPath, 'v0.39.0', files);
+            const requiredFreeBytes = Math.max(5 * GiB, downloadBytes + environment.sizeBytes * 4 + 5 * GiB - reusableBytes);
             currentPlan = { profile, id: randomUUID(), version: 'v0.39.0', rootPath: path.resolve(input.rootPath), targetPath, files, downloadBytes, cachedBytes, requiredFreeBytes, freeBytes, hardwareIssues, recommendation, runtime, tutorialUrl: recommendation.tier === 'lite' ? 'https://github.com/reventadirecta/MiniMax-H3-ComfyUI-8GB-VRAM' : tutorialUrl };
+            lastInput!.selection = { tier: recommendation.tier, runtimeId: runtime.id };
             publish({ status: 'idle', message: hardwareIssues.length ? hardwareIssues.join('；') : profile === 'h3' ? recommendation.label + '：按本机配置选择，首次生成仍需试跑' : '基础环境可安装；H3 模型不会下载', receivedBytes: cachedBytes, totalBytes: downloadBytes, tutorialUrl: currentPlan.tutorialUrl, plan: structuredClone(currentPlan), resumable: false });
             persistProgress(true);
             await writes;
@@ -550,18 +587,55 @@ export function createBootstrapManager(options: BootstrapOptions) {
         return structuredClone(state);
     }
     const ready = (async () => {
-        if (!options.getHardware) return;
         try {
             if (!await exists(progressPath)) return;
             const stat = await noLinks(progressPath);
             if (!stat.isFile() || stat.size > 65536) return;
             const saved = JSON.parse(await fs.readFile(progressPath, 'utf8'));
             if (saved.app !== 'luckyx. Studio' || saved.schemaVersion !== 1 || typeof saved.rootPath !== 'string' || !['environment', 'h3'].includes(saved.profile)) return;
-            const restored = await plan({ rootPath: saved.rootPath, profile: saved.profile, hardware: await options.getHardware() }, true);
+            if (!path.isAbsolute(saved.rootPath) || saved.rootPath.includes('\0')) throw new Error('安装记录中的目录无效');
+            await nearestExistingDirectory(saved.rootPath);
+            const targetPath = path.join(saved.rootPath, 'luckyx-environment'), cache = path.join(saved.rootPath, '.luckyx-bootstrap');
+            const validTier = (value: unknown): value is BootstrapPlan['recommendation']['tier'] => ['environment', 'lite', 'balanced', 'standard'].includes(value as string);
+            let selection = saved.selection && validTier(saved.selection.tier) && ['cu130', 'cu126'].includes(saved.selection.runtimeId) ? saved.selection as { tier: BootstrapPlan['recommendation']['tier']; runtimeId: 'cu130' | 'cu126' } : undefined;
+            // Old records did not save selection. Recover only the fixed model tier
+            // and runtime identifiers; never trust saved URLs, hashes, or drivers.
+            if (!selection) {
+                if (await exists(cache)) await validateResumeOwner(saved.rootPath, targetPath, 'v0.39.0');
+                for (const runtimeId of ['cu130', 'cu126'] as const) {
+                    const paths = environmentCachePaths((options.getEnvironmentFile ?? getPinnedEnvironmentFile)(runtimeId));
+                    const roots = [targetPath, path.join(cache, paths.extractedName, 'ComfyUI_windows_portable')];
+                    for (const root of roots) {
+                        const markerPath = path.join(root, 'luckyx-managed.json');
+                        const markerStat = await inspectOwnedPath(saved.rootPath, markerPath);
+                        if (!markerStat?.isFile() || markerStat.size > 65536) continue;
+                        const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
+                        if (marker.app === 'luckyx. Studio' && marker.version === 'v0.39.0' && validTier(marker.installationTier)) { selection = { tier: marker.installationTier, runtimeId: marker.runtimeId === 'cu126' ? 'cu126' : 'cu130' }; break; }
+                    }
+                    if (selection) break;
+                    if (saved.profile === 'h3') for (const tier of ['lite', 'balanced', 'standard'] as const) {
+                        const diffusion = (options.getModelFiles ?? getPinnedH3Files)(tier).find(file => file.kind === 'model');
+                        if (!diffusion) continue;
+                        const file = path.join(cache, paths.extractedName, 'ComfyUI_windows_portable', diffusion.relativePath);
+                        const complete = await inspectOwnedPath(saved.rootPath, file), partial = await inspectOwnedPath(saved.rootPath, file + '.part');
+                        if (complete?.isFile() || partial?.isFile()) { selection = { tier, runtimeId }; break; }
+                    }
+                    if (selection) break;
+                }
+            }
+            selection ??= { tier: saved.profile === 'environment' ? 'environment' : 'lite', runtimeId: 'cu130' };
+            // This placeholder determines a fixed manifest only; compatibility is
+            // deliberately unknown until the user requests a fresh hardware check.
+            const emptyH3 = saved.profile === 'h3' && selection.tier === 'environment';
+            const restoreHardware: BootstrapHardware = { gpuName: selection.runtimeId === 'cu126' ? 'NVIDIA GeForce GTX 1080' : 'NVIDIA GeForce RTX 3060', vramMb: emptyH3 ? 0 : selection.tier === 'standard' ? 32768 : selection.tier === 'balanced' ? 16384 : 8192, ramGb: emptyH3 ? 0 : selection.tier === 'standard' ? 64 : selection.tier === 'balanced' ? 32 : 16, driver: '未知' };
+            const restored = await plan({ rootPath: saved.rootPath, profile: saved.profile, hardware: restoreHardware }, true);
             if (await exists(restored.targetPath)) {
-                await assertNoLinksTree(restored.targetPath);
+                await noLinks(restored.targetPath);
                 await getPortableLaunchPlan(restored.targetPath);
-                const marker = JSON.parse(await fs.readFile(path.join(restored.targetPath, 'luckyx-managed.json'), 'utf8'));
+                const markerPath = path.join(restored.targetPath, 'luckyx-managed.json');
+                const markerStat = await noLinks(markerPath);
+                if (!markerStat.isFile() || markerStat.size > 65536) throw new Error('已有环境标识无效，请手动检查');
+                const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
                 if (marker.app !== 'luckyx. Studio' || marker.version !== restored.version) throw new Error('已有环境需要手动检查，不能自动覆盖');
                 // Completed installations keep their original tier; changed hardware never silently replaces weights.
                 const installedFiles = (options.getModelFiles ?? getPinnedH3Files)(marker.installationTier ?? 'standard');
@@ -571,37 +645,42 @@ export function createBootstrapManager(options: BootstrapOptions) {
                 // Preserve an installed runtime just as we preserve its model tier.
                 // Legacy completed installations predate runtimeId and used cu130.
                 const installedRuntimeId = marker.runtimeId === 'cu126' ? 'cu126' : 'cu130';
-                const installedEnvironment = installedRuntimeId === restored.runtime?.id ? restored.files[0] : getPinnedEnvironmentFile(installedRuntimeId);
+                const installedEnvironment = installedRuntimeId === restored.runtime?.id ? restored.files[0] : (options.getEnvironmentFile ?? getPinnedEnvironmentFile)(installedRuntimeId);
                 const runtimeChanged = installedRuntimeId !== restored.runtime?.id;
                 const installedRuntime = { ...restored.runtime!, id: installedRuntimeId as 'cu130' | 'cu126', label: installedRuntimeId === 'cu126' ? 'CUDA 12.6 · 旧显卡基础环境' : 'CUDA 13.0 · RTX 运行环境', cudaVersion: installedRuntimeId === 'cu126' ? '12.6' as const : '13.0' as const, ...(runtimeChanged ? { compatibility: 'unknown' as const, reason: '保留已安装的运行环境；当前设备是否兼容需要启动后检查', warnings: [...restored.runtime!.warnings, '设备配置已变化，已有运行包不会自动替换；请检查实际 GPU 运算与节点依赖'] } : {}) };
                 currentPlan = { ...restored, runtime: installedRuntime, recommendation, files: [installedEnvironment, ...installedFiles], downloadBytes: installedEnvironment.sizeBytes + installedFiles.reduce((sum, file) => sum + file.sizeBytes, 0) };
                 let missing = 0;
                 for (const file of installedFiles) {
                     try {
-                        const item = await noLinks(path.join(restored.targetPath, file.relativePath));
-                        if (file.kind === 'model' ? !item.isFile() || item.size !== file.sizeBytes : !item.isDirectory()) missing++;
+                        const destination = path.join(restored.targetPath, file.relativePath);
+                        const item = await inspectOwnedPath(restored.targetPath, destination);
+                        if (!item || (file.kind === 'model' ? !item.isFile() || item.size !== file.sizeBytes : !item.isDirectory())) { missing++; continue; }
+                        if (file.kind === 'node') {
+                            const entry = await inspectOwnedPath(restored.targetPath, path.join(destination, '__init__.py'));
+                            const sourcePath = path.join(destination, '.luckyx-source.json');
+                            const sourceStat = await inspectOwnedPath(restored.targetPath, sourcePath);
+                            if (!entry?.isFile() || !entry.size || !sourceStat?.isFile() || sourceStat.size > 65536) { missing++; continue; }
+                            const source = JSON.parse(await fs.readFile(sourcePath, 'utf8'));
+                            if (source.app !== 'luckyx. Studio' || source.sha256 !== file.sha256 || source.url !== file.url) missing++;
+                        }
                     } catch { missing++; }
                 }
                 if (missing) publish({ status: 'error', phase: '环境已解压，资源不完整', message: `已有环境缺少或损坏 ${missing} 项资源，请在资源中心检查；原文件会保留`, installationPath: restored.targetPath, resumable: false, plan: structuredClone(currentPlan) });
                 else publish({ status: 'completed', phase: '已安装，等待引擎连接', message: '已识别现有环境和模型位置，无需重新下载安装；启动后检查节点', installationPath: restored.targetPath, receivedBytes: currentPlan.downloadBytes, totalBytes: currentPlan.downloadBytes, completedFiles: currentPlan.files.length, resumable: false, plan: structuredClone(currentPlan) });
                 return;
             }
-            const cache = path.join(restored.rootPath, '.luckyx-bootstrap');
             if (!await exists(cache)) return;
-            await ownedResumeBytes(restored.rootPath, restored.targetPath, restored.version);
+            await validateResumeOwner(restored.rootPath, restored.targetPath, restored.version);
             const cachePaths = environmentCachePaths(restored.files[0]);
-            let receivedBytes = 0;
-            for (const file of restored.files) {
-                const downloadedPath = file.kind === 'environment' ? path.join(cache, cachePaths.archiveName) : file.kind === 'node' ? path.join(cache, 'nodes', file.name) : path.join(cache, cachePaths.extractedName, 'ComfyUI_windows_portable', file.relativePath);
-                for (const candidate of [downloadedPath, downloadedPath + '.part']) {
-                    try { const item = await noLinks(candidate); if (item.isFile()) { receivedBytes += Math.min(file.sizeBytes, item.size); break; } } catch { }
-                }
-            }
-            const archiveReady = await matches(path.join(cache, cachePaths.archiveName), restored.files[0]);
+            const receivedBytes = restored.cachedBytes ?? 0;
+            const archiveStat = await inspectOwnedPath(cache, path.join(cache, cachePaths.archiveName));
+            const archiveReady = archiveStat?.isFile() && archiveStat.size === restored.files[0].sizeBytes;
             const extracted = path.join(cache, cachePaths.extractedName, 'ComfyUI_windows_portable');
-            const wasExtracted = await getPortableLaunchPlan(extracted).then(() => true).catch(() => false);
-            publish({ status: 'cancelled', phase: wasExtracted && receivedBytes >= restored.downloadBytes ? '文件已准备，等待环境配置' : wasExtracted ? '环境已解压，模型待完成' : archiveReady ? '环境包已下载，等待解压' : '下载已暂停，可继续', message: restored.hardwareIssues.length ? '已保留安装位置与下载文件；' + restored.hardwareIssues.join('；') + '。处理后重新检查可继续安装' : '已保留安装位置与下载进度，继续后校验并完成安装', receivedBytes, resumable: true });
+            const extractedStat = await inspectOwnedPath(cache, extracted);
+            const wasExtracted = extractedStat?.isDirectory() && await getPortableLaunchPlan(extracted).then(() => true).catch(() => false);
+            publish({ status: 'cancelled', phase: wasExtracted && receivedBytes >= restored.downloadBytes ? '文件已准备，等待环境配置' : wasExtracted ? '环境已解压，模型待完成' : archiveReady ? '环境包已下载，等待解压' : '下载已暂停，可继续', message: '已保留安装位置与下载文件，继续安装会重新校验。请点击“检查配置与下载量”重新检查当前设备与驱动', receivedBytes, resumable: true });
         } catch (error: any) { publish({ status: 'error', phase: '安装恢复检查', message: error.message ?? '无法恢复安装记录，请选择已有环境或重新检查', error: error.message, resumable: false }); }
+        finally { restoring = false; }
     })();
     async function completedInstallation(): Promise<string> {
         await ready;

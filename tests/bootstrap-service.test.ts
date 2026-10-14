@@ -6,6 +6,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createBootstrapManager } from '../src/backend/bootstrap';
+import { getPinnedEnvironmentFile } from '../src/backend/cuda-runtime';
 import { getPinnedH3Files } from '../src/backend/h3-downloads';
 import { h3ModelSpecs } from '../src/shared/h3-installation';
 import { createStudioService } from '../src/backend/service';
@@ -33,6 +34,7 @@ async function fixture(t: any) {
     const write = async (file: string, content: string | Buffer = blob) => { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content); };
     const official = 'https://github.com/Comfy-Org/ComfyUI/releases/download/v0.39.0/ComfyUI_windows_portable_nvidia.7z';
     const options = { dataDir, sevenZipPath: 'fixture-7za.exe', getHardware: async () => ({ gpuName: 'NVIDIA GeForce RTX 4060', vramMb: 8192, ramGb: 16, driver: '590.01' }), getFreeBytes: async () => 1024 ** 4,
+        getEnvironmentFile: (runtime: Parameters<typeof getPinnedEnvironmentFile>[0]) => ({ ...getPinnedEnvironmentFile(runtime), sizeBytes: blob.length, sha256 }),
         getModelFiles: (tier: Parameters<typeof getPinnedH3Files>[0]) => getPinnedH3Files(tier).map(file => ({ ...file, sizeBytes: blob.length, sha256 })),
         fetch: (async (input: any) => String(input).includes('api.github.com') ? Response.json({ assets: [{ name: 'ComfyUI_windows_portable_nvidia.7z', size: blob.length, digest: 'sha256:' + sha256, browser_download_url: official }] }) : new Response(blob)) as typeof fetch,
         runner: async (_exe: string, args: string[]) => {
@@ -57,7 +59,7 @@ async function fixture(t: any) {
     const engineUrl = `http://127.0.0.1:${(server.address() as any).port}`;
     const services: StudioService[] = [];
     t.after(async () => { for (const service of services) await service.dispose(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); assert.ok(path.basename(root).startsWith('luckyx-bootstrap-service-')); await fs.rm(root, { recursive: true, force: true }); });
-    async function create(initialPath = old) { const service = await createStudioService({ dataDir, defaultInstallationPath: initialPath, defaultEngineUrl: engineUrl, bootstrapManager: createBootstrapManager(options) }); services.push(service); return service; }
+    async function create(initialPath = old) { const service = await createStudioService({ dataDir, defaultInstallationPath: initialPath, defaultEngineUrl: engineUrl, bootstrapManager: createBootstrapManager(options) }); services.push(service); await service.invoke('snapshot'); return service; }
     return { root, dataDir, target: plan.targetPath, old, engine, create };
 }
 test('安装已完成但SQLite尚未配置时，重启自动恢复可信目标和Lite四模型，不自动启动引擎', async t => {

@@ -77,14 +77,17 @@ export async function createStudioService(options: {
     let bootstrapPlan: BootstrapPlan | undefined;
     let bootstrapFlight: Promise<void> | undefined;
     let bootstrapConnectionError: string | undefined;
-    let refreshBusy = false;
+    let refreshFlight: Promise<Snapshot> | undefined;
     let startBusy = false;
     let startFlight: Promise<unknown> | undefined;
     let submitChain = Promise.resolve();
     const inflightSubmissions = new Map<string, Promise<unknown>>();
     const clientId = randomUUID();
+    let initialized = false;
+    let initialization: Promise<void>;
+    let initializationFailed = false;
     const emit = () => {
-        if (!disposed)
+        if (initialized && !disposed && !closing)
             for (const listener of listeners) {
                 try {
                     listener(structuredClone(snapshot));
@@ -224,10 +227,13 @@ export async function createStudioService(options: {
             catch { }
         });
     }
-    async function refresh() {
-        if (refreshBusy || disposed)
-            return snapshot;
-        refreshBusy = true;
+    function refresh(): Promise<Snapshot> {
+        if (disposed || closing) return Promise.resolve(structuredClone(snapshot));
+        if (refreshFlight) return refreshFlight;
+        refreshFlight = refreshImpl().finally(() => { refreshFlight = undefined; });
+        return refreshFlight;
+    }
+    async function refreshImpl(): Promise<Snapshot> {
         try {
             const stats = await api('/system_stats', {}, 3000);
             if (!stats.system || !Array.isArray(stats.devices))
@@ -300,7 +306,6 @@ export async function createStudioService(options: {
             socket?.close();
         }
         finally {
-            refreshBusy = false;
             emit();
         }
         return structuredClone(snapshot);
@@ -446,7 +451,7 @@ export async function createStudioService(options: {
         await refresh();
         return structuredClone(snapshot.settings);
     }
-    async function connectBootstrapInstallation() {
+    async function connectBootstrapInstallation(localRestore = false) {
         await bootstrap.ready;
         if (closing || disposed) throw new Error('启动器正在退出');
         if (bootstrapFlight) throw new Error('安装仍在进行，请等待完成后连接');
@@ -456,7 +461,8 @@ export async function createStudioService(options: {
             await scan();
             if (snapshot.settings.initialized) { bootstrapConnectionError = undefined; return { connected: true, alreadyConnected: true }; }
         }
-        await refresh();
+        if (!localRestore) await refresh();
+        if (closing || disposed) throw new Error('启动器正在退出');
         if (child || startFlight || ['ready', 'busy'].includes(snapshot.engine.status) || snapshot.tasks.some(task => activeStatuses.includes(task.status))) throw new Error('请先停止现有引擎并完成任务，再连接已安装环境');
         const previous = structuredClone(snapshot.settings);
         snapshot.settings = { ...snapshot.settings, installationPath: target, modelPath, engineUrl: 'http://127.0.0.1:8188' };
@@ -641,6 +647,8 @@ export async function createStudioService(options: {
                 await Promise.race([exit, new Promise<void>(resolve => { const deadline = setTimeout(resolve, 4000); deadline.unref(); })]);
             }
             await bootstrap.dispose();
+            await initialization?.catch(() => {});
+            await refreshFlight?.catch(() => {});
             await bootstrapFlight?.catch(() => {});
             await startFlight?.catch(() => {});
             await submitChain;
@@ -656,6 +664,8 @@ export async function createStudioService(options: {
     }
     const service: StudioService = {
         async invoke(command, payload) {
+            if (command === 'snapshot' && initializationFailed && !closing && !disposed) initialization = initialize();
+            if (command !== 'lifecycle.shutdown') await initialization;
             if (disposed)
                 throw new Error('启动器已关闭');
             if (closing && !['lifecycle.shutdown', 'snapshot', 'bootstrap.status'].includes(command)) throw new Error('启动器正在退出');
@@ -810,16 +820,30 @@ export async function createStudioService(options: {
         },
         async dispose() { if (disposed) return; await shutdown(); if (disposed) return; disposed = true; listeners.clear(); db.close(); }
     };
-    const timer = setInterval(() => { void refresh().catch(() => { }); }, 2500);
+    const timer = setInterval(() => { if (initialized && !closing) void refresh().catch(() => {}); }, 2500);
     timer.unref();
-    await scan();
-    await persist();
-    await refresh();
-    await bootstrap.ready;
-    if (!snapshot.settings.initialized && bootstrap.snapshot().status === 'completed') {
-        try { await connectBootstrapInstallation(); }
-        catch (error: any) { bootstrapConnectionError = error.message ?? '已安装环境的连接设置尚未恢复，请重试连接'; log('warn', bootstrapConnectionError!); }
+    // Window construction must not wait for archive recovery or an offline engine.
+    // IPC returns only the fully restored local snapshot, never a false first-run state.
+    async function initialize(): Promise<void> {
+        initializationFailed = false;
+        try {
+            await scan();
+            if (closing || disposed) return;
+            await bootstrap.ready;
+            if (closing || disposed) return;
+            if (!snapshot.settings.initialized && bootstrap.snapshot().status === 'completed') {
+                try { await connectBootstrapInstallation(true); }
+                catch (error: any) { bootstrapConnectionError = error.message ?? '已安装环境的连接设置尚未恢复，请重试连接'; log('warn', bootstrapConnectionError!); }
+            }
+            if (closing || disposed) return;
+            await persist();
+            initialized = true;
+            emit();
+            void refresh().catch(() => {});
+        } catch (error) { initializationFailed = true; throw error; }
     }
-
+    initialization = initialize();
+    // The invoke gate reports initialization errors to the renderer's retry screen.
+    void initialization.catch(() => {});
     return service;
 }

@@ -295,7 +295,7 @@ onMounted(async () => {
     stressControls.value = controls.default; stressModule = fixtures
     stressMode.value = fixtures.readStressMode(location.search)
   }
-  try { accept(await invoke<Snapshot>('snapshot')) } catch { bootError.value = '本地服务未连接，请确认启动器已启动后重试。' }
+  try { accept(await invoke<Snapshot>('snapshot')) } catch { bootError.value = '本地环境或任务记录暂时无法读取，请重试。已下载文件会保留。' }
   if (closing) return
   if (import.meta.env.DEV && stressModule) {
     const fixtures = stressModule
@@ -316,10 +316,10 @@ onUnmounted(() => { closing = true; unsubscribe(); unsubscribeClose(); window.cl
       <aside class="sidebar">
         <a class="brand" href="#home" aria-label="luckyx. Studio 首页" @click.prevent="navigate('home')"><img class="brand-icon" :src="assetUrl('/brand/luckyx-symbol.svg')" width="32" height="32" alt="" /><span class="brand-wordmark"><strong>luckyx.</strong><span>Studio</span></span></a>
         <nav aria-label="主要导航"><button v-for="item in nav" :key="item.id" :class="['nav-item', { active: page === item.id }]" :aria-current="page === item.id ? 'page' : undefined" :aria-label="item.label" :title="item.label" @click="navigate(item.id)"><component :is="item.icon" :size="21" weight="regular" /><span>{{ item.label }}</span></button></nav>
-        <div class="sidebar-bottom"><button :class="['setup-link', { active: page === 'setup' }]" :aria-current="page === 'setup' ? 'page' : undefined" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><span class="version">v0.1.9 · 本地创作</span></div>
+        <div class="sidebar-bottom"><button :class="['setup-link', { active: page === 'setup' }]" :aria-current="page === 'setup' ? 'page' : undefined" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><span class="version">v0.1.10 · 本地创作</span></div>
       </aside>
       <main ref="mainContent" class="main-content" :class="{ 'workbench-main': page === 'workbench' && workbenchKind === 'generate' }">
-        <div v-if="!state" class="boot-state"><PhSpinnerGap v-if="!bootError" :size="32" class="spinning" /><PhWarningCircle v-else :size="32" /><h1>{{ bootError ? '连接尚未完成' : '准备你的创作工作台' }}</h1><p class="muted">{{ bootError || '正在读取本地环境和任务记录…' }}</p><button v-if="bootError" class="btn primary" @click="refresh().then(() => bootError = '').catch(() => {})">重试连接</button></div>
+        <div v-if="!state" class="boot-state"><PhSpinnerGap v-if="!bootError" :size="32" class="spinning" /><PhWarningCircle v-else :size="32" /><h1>{{ bootError ? '本地数据未能读取' : '准备你的创作工作台' }}</h1><p class="muted">{{ bootError || '正在恢复本地环境与任务记录…' }}</p><button v-if="bootError" class="btn primary" @click="refresh().then(() => bootError = '').catch(() => {})">重试连接</button></div>
         <StudioHome v-else-if="page === 'home'" :snapshot="state" :busy="uiBusy" @create="create" @import="workflowInput?.click()" @navigate="navigate" @action="run" @inspiration="useInspiration" @restore="restore" />
         <section v-else-if="page === 'workbench'" class="workbench-page">
           <header class="page-heading workbench-heading"><div><h1>创作工作台</h1><p class="muted">MiniMax H3 · {{ workbenchKind === 'transform' ? '风格 · 人物 · 背景' : params.mode === 'text' ? '文生视频' : '图生视频' }}</p></div><div class="workbench-header-actions"><button v-if="workbenchKind === 'generate'" ref="drawerTrigger" class="text-button task-drawer-toggle" :aria-expanded="taskDrawer" aria-controls="workbench-task-summary" @click="toggleDrawer"><PhListBullets :size="18" />最近任务</button><button class="text-button" @click="run('native.openEngine')">打开原生界面<PhArrowSquareOut :size="17" /></button></div></header>
