@@ -13,7 +13,7 @@ import type { UiPreferences } from '../src/ui-preferences'
 import { desktop, invoke } from '../src/api'
 
 const props = defineProps<{ page: string; snapshot: Snapshot; busy: boolean; mediaUrl: (output: OutputFile) => string; uiPreferences?: UiPreferences }>()
-const emit = defineEmits<{ action: [command: string, payload?: unknown]; create: [mode?: 'image' | 'text']; restore: [task: TaskRecord]; uiPreferences: [value: UiPreferences] }>()
+const emit = defineEmits<{ action: [command: string, payload?: unknown]; create: [mode?: 'image' | 'text']; restore: [task: TaskRecord]; useWorkflow: [workflow: import('../../shared/contracts').UserWorkflow]; uiPreferences: [value: UiPreferences] }>()
 const draft = reactive<Settings>({ ...props.snapshot.settings })
 watch(() => JSON.stringify(props.snapshot.settings), () => Object.assign(draft, props.snapshot.settings))
 const pathFields = [
@@ -142,7 +142,7 @@ watch(() => props.page, () => { query.value = ''; pathError.value = ''; removing
     <article v-for="card in templateCards" :key="`${card.template.id}-${card.mode}`" class="panel library-card"><div class="template-image"><img :src="assetUrl(card.mode === 'image' ? '/coast-inspiration.webp' : '/camera-studio.webp')" :alt="card.mode === 'image' ? '海岸公路创作示意图' : '摄影机与胶片创作示意图'" /><span>创作示意图</span></div><div class="template-copy"><p class="eyebrow">{{ card.mode === 'image' ? '图生视频' : '文生视频' }} · MiniMax H3</p><h2>{{ card.mode === 'image' ? '让一帧画面，继续讲述。' : '从一句灵感，到一个镜头。' }}</h2><span class="readiness" :class="{ good: card.template.ready && engineReady }"><component :is="card.template.ready && engineReady ? PhCheckCircle : PhInfo" :size="18" />{{ engineReady ? (card.template.ready ? '依赖检查通过' : '依赖待处理') : '引擎离线 · 运行条件待检查' }}</span><p class="muted">{{ card.mode === 'image' ? '添加首帧图片，描述接下来的镜头。' : '输入描述，无需首帧图片。' }}</p><details class="template-details"><summary>模板参数与设备</summary><dl class="details"><dt>输入</dt><dd>{{ card.mode === 'image' ? '图片 + 提示词' : '提示词' }}</dd><dt>输出</dt><dd>MP4 · 音轨按运行方案提供</dd><dt>默认时长</dt><dd>{{ (card.template.frames / card.template.fps).toFixed(2) }} 秒 · {{ card.template.fps }} fps</dd><dt>采样步数</dt><dd>{{ card.template.defaultSteps }} 步</dd></dl><p class="muted small">{{ card.template.name }} · {{ gpu }} · {{ vram }}</p></details><div class="actions"><button class="btn primary" @click="emit('create', card.mode)"><PhPlay :size="18" weight="fill" />{{ card.mode === 'image' ? '图片开始创作' : '文字开始创作' }}</button><button class="btn secondary" :disabled="busy" @click="dependencies">查看依赖</button></div></div></article>
     </div>
     <div v-if="!templates.length" class="panel empty-state"><PhMagnifyingGlass :size="36" /><h3>没有匹配的精选模板</h3><p class="muted">试试其他关键词。</p><button class="btn secondary" @click="query = ''">清空搜索</button></div>
-    <WorkflowLibrary :snapshot="snapshot" :query="query" :busy="busy" @refresh="emit('action', 'snapshot')" />
+    <WorkflowLibrary :snapshot="snapshot" :query="query" :busy="busy" @refresh="emit('action', 'snapshot')" @use="emit('useWorkflow', $event)" />
     <div v-if="showDependencies" class="panel dependency-panel"><h3>模板依赖</h3><div v-for="item in snapshot.templates" :key="item.id"><p v-if="!engineReady" class="muted">请启动引擎后检查节点与模型。</p><ul><li v-for="model in item.models" :key="model">{{ model }}</li></ul><p v-for="issue in item.issues" :key="issue" class="warning">{{ issue }}</p></div></div>
     <p class="page-note muted">精选模板在创作工作台使用；个人工作流在原生节点编辑器运行。封面为创作示例，运行前请检查环境。</p>
   </section>

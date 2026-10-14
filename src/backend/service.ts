@@ -10,6 +10,7 @@ import WebSocket from 'ws';
 import type { Snapshot, StudioService, TaskRecord, Settings, GenerationParams, UserWorkflow, UserWorkflowDocument, VideoRecipeEntry } from '../shared/contracts';
 import { validateEngineUrl, validateGenerationParams, validateImage, buildWorkflow, mapHistoryOutputs, isPromptRunning, safeOutputPath } from '../shared/workflow';
 import { parseWorkflowJson, validateWorkflowName, createEmptyWorkflowJson } from '../shared/workflow-library';
+import { analyzeWorkflowParameters, applyWorkflowParameterValues } from '../shared/workflow-parameters';
 import { videoRecipeDefinitions, MODEL_LOADER_FIELDS } from '../shared/video-recipes';
 import { getEngineInstallation } from './engine-installation';
 import { createBootstrapManager } from './bootstrap';
@@ -491,6 +492,8 @@ export async function createStudioService(options: {
         const task = snapshot.tasks.find(t => t.id === (payload as any)?.id);
         if (!task || !['failed', 'interrupted'].includes(task.status))
             throw new Error('请选择失败或已取消的任务');
+        if (task.params.templateId.startsWith('workflow:'))
+            throw new Error('自定义工作流请回到工作流库重新确认参数和素材后生成');
         await scan();
         const params = validateGenerationParams(task.params, h3Runtime.defaults.steps);
         if (params.mode !== 'text' && !task.inputImage)
@@ -531,6 +534,66 @@ export async function createStudioService(options: {
         if (!row)
             throw new Error('工作流不存在或已移除');
         return { metadata: JSON.parse(String(row[0])) as UserWorkflow, json: String(row[1]) };
+    }
+    function workflowAnalysis(payload: unknown) {
+        const document = workflowDocument(payload);
+        const parsed = parseWorkflowJson(document.json);
+        if (parsed.format !== 'api') return { metadata: document.metadata, status: 'editor-only' as const, message: '节点画布格式需要先在 ComfyUI 导出 API 格式后再导入。' };
+        const analysis = analyzeWorkflowParameters(parsed);
+        return { metadata: document.metadata, status: analysis.features.videoOutput ? 'ready' as const : 'unsupported' as const, analysis,
+            message: analysis.features.videoOutput ? '已识别可编辑内容和生成参数。' : '没有识别到受支持的视频输出节点。' };
+    }
+    async function runUserWorkflow(payload: unknown): Promise<TaskRecord> {
+        if (closing) throw new Error('启动器正在退出，不能提交新任务');
+        const input = payload as { id?: unknown; values?: unknown } | null;
+        const document = workflowDocument({ id: input?.id });
+        const parsed = parseWorkflowJson(document.json);
+        const analysis = analyzeWorkflowParameters(parsed);
+        if (!analysis.features.videoOutput) throw new Error('工作流没有可识别的视频输出节点，请在节点编辑器检查');
+        if (!input?.values || typeof input.values !== 'object' || Array.isArray(input.values)) throw new Error('请填写工作流需要的内容');
+        const values = { ...(input.values as Record<string, unknown>) };
+        const mediaSlots = analysis.slots.filter(slot => slot.editable && ['image', 'video', 'audio'].includes(slot.kind));
+        if (mediaSlots.some(slot => slot.kind !== 'image')) throw new Error('当前版本已识别视频或音频素材槽位，请先在节点编辑器配置；工作台直传将在后续版本提供');
+        await refresh();
+        if (!['ready', 'busy'].includes(snapshot.engine.status)) throw new Error('请先启动引擎');
+        const info = await api('/object_info');
+        const missing = [...new Set(Object.values(parsed.graph).map((node: any) => node?.class_type).filter((type): type is string => typeof type === 'string' && !info[type]))];
+        if (missing.length) throw new Error('工作流缺少节点：' + missing.join('、'));
+        const uploadedNames: string[] = [];
+        for (const slot of mediaSlots) {
+            const image = validateImage(values[slot.id] as GenerationParams['image']);
+            const form = new FormData();
+            const uploadId = randomUUID();
+            form.append('image', new Blob([image.bytes as BlobPart], { type: image.mime }), uploadId + '-' + image.name);
+            form.append('type', 'input'); form.append('overwrite', 'false');
+            const uploaded = await api('/upload/image', { method: 'POST', body: form }, 30000);
+            if (typeof uploaded.name !== 'string' || !safeOutputPath(uploaded.name, uploaded.subfolder ?? '')) throw new Error('引擎返回了无效图片路径');
+            const uploadedName = [uploaded.subfolder, uploaded.name].filter(Boolean).join('/');
+            uploadedNames.push(uploadedName); values[slot.id] = uploadedName;
+        }
+        const applied = applyWorkflowParameterValues(parsed, analysis, values);
+        const valueOf = (kind: string, fallback: number | string) => {
+            const slot = analysis.slots.find(item => item.kind === kind); const node = slot ? applied.graph[slot.nodeId] as any : undefined;
+            return slot ? node?.inputs?.[slot.inputName] ?? fallback : fallback;
+        };
+        const prompt = String(valueOf('prompt', document.metadata.name));
+        const params: GenerationParams = { templateId: `workflow:${document.metadata.id}`, mode: mediaSlots.length ? 'image' : 'text', prompt,
+            width: Number(valueOf('width', 864)), height: Number(valueOf('height', 480)), frames: Number(valueOf('frames', 1)),
+            steps: Number(valueOf('steps', 1)), seed: Number(valueOf('seed', 0)) };
+        const id = randomUUID(), now = new Date().toISOString();
+        const task: TaskRecord = { id, title: document.metadata.name, status: 'submitting', createdAt: now, updatedAt: now, params, stage: '提交自定义工作流', outputs: [], ...(uploadedNames[0] ? { inputImage: uploadedNames[0] } : {}) };
+        snapshot.tasks.unshift(task); await persist(); emit();
+        let promptSent = false;
+        try {
+            promptSent = true;
+            const result = await post('/prompt', { client_id: clientId, prompt: applied.graph, extra_data: { luckyx_task_id: id, luckyx_workflow_id: document.metadata.id } });
+            if (typeof result.prompt_id !== 'string') throw new Error('引擎未确认任务编号');
+            task.promptId = result.prompt_id; task.status = 'queued'; task.stage = '排队中';
+        } catch (error: any) {
+            const uncertain = promptSent && !/^引擎请求失败（4\d\d）/.test(error.message ?? '');
+            task.status = uncertain ? 'unknown' : 'failed'; task.stage = uncertain ? '提交结果待确认，请检查引擎队列' : '提交失败'; task.error = error.message ?? '提交失败';
+        }
+        task.updatedAt = new Date().toISOString(); await persist(); emit(); return structuredClone(task);
     }
     async function importWorkflow(payload: unknown, recipeId?: string): Promise<UserWorkflow> {
         const input = payload as {
@@ -730,6 +793,8 @@ export async function createStudioService(options: {
                 case 'workflow.recipes': return recipes();
                 case 'workflow.recipeImport': return recipeImport(payload);
                 case 'workflow.get': return workflowDocument(payload);
+                case 'workflow.analyze': return workflowAnalysis(payload);
+                case 'workflow.run': return runUserWorkflow(payload);
                 case 'workflow.import': return importWorkflow(payload);
                 case 'workflow.create': return importWorkflow({ name: (payload as {
                         name?: unknown;

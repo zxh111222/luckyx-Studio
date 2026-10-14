@@ -48,6 +48,18 @@ test('本地模拟服务验证模板/资源，快照不可从调用者篡改',as
  await assert.rejects(f.service.invoke('settings.save',{engineUrl:'http://evil.test'}),/本机/);
  await assert.rejects(f.service.invoke('engine.stop'),/外部程序/);
 });
+test('导入API工作流自动识别内容并从创作工作台安全提交克隆图',async t=>{
+ const f=await fixture(t);const workflow=await f.service.invoke('workflow.import',{name:'我的H3工作流',json:JSON.stringify(graph)}) as {id:string};
+ const analyzed=await f.service.invoke('workflow.analyze',{id:workflow.id}) as any;assert.equal(analyzed.status,'ready');assert.equal(analyzed.analysis.features.videoOutput,true);assert.ok(analyzed.analysis.slots.some((slot:any)=>slot.kind==='prompt'));assert.ok(analyzed.analysis.slots.some((slot:any)=>slot.kind==='image'));
+ const values=Object.fromEntries(analyzed.analysis.slots.filter((slot:any)=>slot.editable&&!['image','video','audio'].includes(slot.kind)).map((slot:any)=>[slot.id,slot.value]));
+ const prompt=analyzed.analysis.slots.find((slot:any)=>slot.kind==='prompt'),image=analyzed.analysis.slots.find((slot:any)=>slot.kind==='image');values[prompt.id]='自定义工作流镜头';values[image.id]=base.image;
+ const task=await f.service.invoke('workflow.run',{id:workflow.id,values}) as TaskRecord;assert.equal(task.status,'queued');assert.equal(task.title,'我的H3工作流');assert.equal(task.params.templateId,`workflow:${workflow.id}`);
+ const sent=f.state.calls.filter(call=>call.url==='/prompt').at(-1)!.body;assert.equal(sent.prompt[prompt.nodeId].inputs[prompt.inputName],'自定义工作流镜头');assert.equal(sent.prompt[image.nodeId].inputs[image.inputName],'test-input/safe.png');assert.notEqual(graph[prompt.nodeId as keyof typeof graph].inputs[prompt.inputName as never] as unknown,'自定义工作流镜头');
+});
+
+test('节点画布工作流明确要求导出API格式，不会猜测控件并提交',async t=>{
+ const f=await fixture(t);const workflow=await f.service.invoke('workflow.create',{name:'画布流程'}) as {id:string};const analyzed=await f.service.invoke('workflow.analyze',{id:workflow.id}) as any;assert.equal(analyzed.status,'editor-only');assert.match(analyzed.message,/API/);await assert.rejects(f.service.invoke('workflow.run',{id:workflow.id,values:{}}),/只支持 API/);
+});
 test('缺少模型或节点时阻止上传和提交',async t=>{
  const f=await fixture(t);delete f.state.info.MiniMaxH3ImageToVideo;
  await assert.rejects(f.service.invoke('task.submit',base),/缺少节点/);assert.equal(f.state.calls.filter(c=>c.url==='/prompt').length,0);

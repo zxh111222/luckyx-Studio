@@ -11,10 +11,11 @@ import {
 import SecondaryPages from '../components/SecondaryPages.vue'
 import StudioHome from '../components/StudioHome.vue'
 import CloseApplicationDialog from '../components/CloseApplicationDialog.vue'
+import CustomWorkflowWorkbench from '../components/CustomWorkflowWorkbench.vue'
 import type { CloseRequest } from '../../shared/close-policy'
 import VideoTransformStudio from '../components/VideoTransformStudio.vue'
 import { desktop, invoke, mediaUrl, subscribe, setUiStressInterceptor } from './api'
-import type { GenerationParams, Snapshot, TaskRecord } from '../../shared/contracts'
+import type { GenerationParams, Snapshot, TaskRecord, UserWorkflow } from '../../shared/contracts'
 import { H3_RESOLUTIONS, H3_DURATIONS, h3FramesForSeconds, isVerifiedH3Configuration } from '../../shared/h3-parameters'
 import { validateGenerationParams } from '../../shared/workflow'
 import { createFocusTrap, createUiPreferencesController, DEFAULT_UI_PREFERENCES, type UiPreferences } from './ui-preferences'
@@ -39,6 +40,7 @@ const inputPreview = ref('')
 const inputName = ref('')
 const inputError = ref('')
 const selectedTaskId = ref('')
+const selectedCustomWorkflow = ref<UserWorkflow | null>(null)
 const taskDrawer = ref(false)
 const uploadInput = ref<HTMLInputElement | null>(null)
 const workflowInput = ref<HTMLInputElement | null>(null)
@@ -177,7 +179,9 @@ function navigate(next: string) {
   previewVideo.value?.pause(); page.value = next; taskDrawer.value = false
   void nextTick(() => mainContent.value?.scrollTo({ top: 0, behavior: 'auto' }))
 }
-function create(mode?: 'image' | 'text') { if (mode) params.mode = mode; workbenchKind.value = 'generate'; navigate(state.value?.settings.initialized || engineReady.value ? 'workbench' : 'setup') }
+function create(mode?: 'image' | 'text') { if (mode) params.mode = mode; selectedCustomWorkflow.value = null; workbenchKind.value = 'generate'; navigate(state.value?.settings.initialized || engineReady.value ? 'workbench' : 'setup') }
+function useWorkflow(workflow: UserWorkflow) { selectedCustomWorkflow.value = workflow; workbenchKind.value = 'generate'; navigate('workbench') }
+function customSubmitted(task: TaskRecord) { selectedTaskId.value = task.id; notify(task.status === 'failed' || task.status === 'unknown' ? task.error || task.stage : '工作流任务已提交', task.status === 'failed' || task.status === 'unknown') }
 function useInspiration(prompt: string) { params.prompt = prompt; create(); notify('镜头提示已填入，可继续调整并上传素材') }
 function useRecommendedParameters() {
   const chosen = template.value
@@ -316,12 +320,14 @@ onUnmounted(() => { closing = true; unsubscribe(); unsubscribeClose(); window.cl
       <aside class="sidebar">
         <a class="brand" href="#home" aria-label="luckyx. Studio 首页" @click.prevent="navigate('home')"><img class="brand-icon" :src="assetUrl('/brand/luckyx-symbol.svg')" width="32" height="32" alt="" /><span class="brand-wordmark"><strong>luckyx.</strong><span>Studio</span></span></a>
         <nav aria-label="主要导航"><button v-for="item in nav" :key="item.id" :class="['nav-item', { active: page === item.id }]" :aria-current="page === item.id ? 'page' : undefined" :aria-label="item.label" :title="item.label" @click="navigate(item.id)"><component :is="item.icon" :size="21" weight="regular" /><span>{{ item.label }}</span></button></nav>
-        <div class="sidebar-bottom"><button :class="['setup-link', { active: page === 'setup' }]" :aria-current="page === 'setup' ? 'page' : undefined" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><span class="version">v0.1.13 · 本地创作</span></div>
+        <div class="sidebar-bottom"><button :class="['setup-link', { active: page === 'setup' }]" :aria-current="page === 'setup' ? 'page' : undefined" @click="navigate('setup')"><PhFolderOpen :size="17" />安装与连接<PhCaretRight :size="14" /></button><div class="engine-indicator"><span :class="['status-dot', state?.engine.status]" />{{ engineName }}</div><span class="version">v0.1.14 · 本地创作</span></div>
       </aside>
       <main ref="mainContent" class="main-content" :class="{ 'workbench-main': page === 'workbench' && workbenchKind === 'generate' }">
         <div v-if="!state" class="boot-state"><PhSpinnerGap v-if="!bootError" :size="32" class="spinning" /><PhWarningCircle v-else :size="32" /><h1>{{ bootError ? '本地数据未能读取' : '准备你的创作工作台' }}</h1><p class="muted">{{ bootError || '正在恢复本地环境与任务记录…' }}</p><button v-if="bootError" class="btn primary" @click="refresh().then(() => bootError = '').catch(() => {})">重试连接</button></div>
         <StudioHome v-else-if="page === 'home'" :snapshot="state" :busy="uiBusy" @create="create" @import="workflowInput?.click()" @navigate="navigate" @action="run" @inspiration="useInspiration" @restore="restore" />
         <section v-else-if="page === 'workbench'" class="workbench-page">
+          <CustomWorkflowWorkbench v-if="selectedCustomWorkflow" :workflow="selectedCustomWorkflow" :engine-ready="engineReady" @back="selectedCustomWorkflow = null" @submitted="customSubmitted" />
+          <template v-else>
           <header class="page-heading workbench-heading"><div><h1>创作工作台</h1><p class="muted">MiniMax H3 · {{ workbenchKind === 'transform' ? '风格 · 人物 · 背景' : params.mode === 'text' ? '文生视频' : '图生视频' }}</p></div><div class="workbench-header-actions"><button v-if="workbenchKind === 'generate'" ref="drawerTrigger" class="text-button task-drawer-toggle" :aria-expanded="taskDrawer" aria-controls="workbench-task-summary" @click="toggleDrawer"><PhListBullets :size="18" />最近任务</button><button class="text-button" @click="run('native.openEngine')">打开原生界面<PhArrowSquareOut :size="17" /></button></div></header>
           <div class="tabs" role="tablist" aria-label="创作方式"><button role="tab" :aria-selected="workbenchKind === 'generate'" :class="{ active: workbenchKind === 'generate' }" @click="workbenchKind = 'generate'">生成视频</button><button role="tab" :aria-selected="workbenchKind === 'transform'" :class="{ active: workbenchKind === 'transform' }" @click="workbenchKind = 'transform'">改造视频</button></div>
           <VideoTransformStudio v-if="workbenchKind === 'transform'" :snapshot="state" :busy="uiBusy" @refresh="refresh" />
@@ -354,8 +360,9 @@ onUnmounted(() => { closing = true; unsubscribe(); unsubscribeClose(); window.cl
             <div class="panel preview-panel"><h2>结果预览</h2><div v-if="selectedOutput" class="result-player"><video ref="previewVideo" :key="selectedOutput.url" :src="mediaUrl(selectedOutput)" controls preload="metadata" playsinline /><div class="result-details"><div><strong>{{ selectedTask?.title }}</strong><p class="muted">MP4 · {{ selectedTask?.params.width }} × {{ selectedTask?.params.height }} · {{ ((selectedTask?.params.frames || 124) / 24).toFixed(2) }} 秒</p></div><button class="btn secondary" :disabled="uiBusy" @click="run('native.export', { taskId: selectedTask?.id, index: 0 })"><PhExport :size="17" />导出 MP4</button></div></div><div v-else class="preview-empty"><PhFilmStrip :size="42" /><h3>{{ selectedTask?.status === 'running' ? '画面正在生成' : '你的第一段视频，从这里开始' }}</h3><p>{{ selectedTask && ['queued', 'submitting', 'running'].includes(selectedTask.status) ? '完成后会自动显示结果，生成期间可以查看任务进度。' : params.mode === 'text' ? '描述你想看到的画面与动作，然后点击生成。' : '上传图片，描述你想看到的变化，然后点击生成。' }}</p><span v-if="selectedTask?.status === 'running'" class="badge">{{ selectedTask.stage }}</span></div><p v-if="selectedOutput && !engineReady" class="parameter-note">引擎未启动，历史视频暂无法加载。启动引擎后可播放或导出。</p><p class="preview-footer">保留你的创作参数，每一次尝试都可以继续。</p></div>
             <Transition name="drawer" @before-leave="retireSurface" @before-enter="activateSurface" @leave-cancelled="activateSurface" :css="compactLayout && !drawerInstant && !layoutChanging"><aside v-if="!compactLayout || taskDrawer" id="workbench-task-summary" ref="drawerElement" :tabindex="compactLayout ? -1 : undefined" role="region" aria-labelledby="task-summary-title" :class="['panel task-summary', { 'drawer-open': taskDrawer }]"><div class="summary-heading"><h2 id="task-summary-title">最近任务</h2><button class="text-button drawer-close" aria-label="关闭任务详情" @click="closeDrawer"><PhX :size="18" /></button></div><p v-if="compactLayout" class="drawer-context">任务面板 · Escape 关闭，Tab 可继续访问创作界面。</p><template v-if="selectedTask"><div :class="['task-status', selectedTask.status]"><PhCheckCircle v-if="selectedTask.status === 'completed'" :size="20" weight="fill" /><PhSpinnerGap v-else-if="['running', 'queued', 'submitting'].includes(selectedTask.status)" :size="20" class="spinning" /><PhWarningCircle v-else :size="20" />{{ taskNames[selectedTask.status] }}</div><h3 class="task-title">{{ selectedTask.title }}</h3><p class="muted small-note">{{ formatDate(selectedTask.createdAt) }}</p><div class="summary-stage"><span class="muted">当前阶段</span><strong>{{ selectedTask.stage }}</strong></div><div v-if="selectedTask.progress && selectedTask.status === 'running'" class="node-progress"><div><span>节点进度</span><strong>{{ selectedPercent }}%</strong></div><progress :value="selectedTask.progress.value" :max="selectedTask.progress.max" /><p class="muted small-note">仅代表当前节点，不是整体进度</p></div><p v-if="selectedTask.error" class="error-message">{{ selectedTask.error }}</p><dl class="summary-metadata"><div><dt>模板</dt><dd>MiniMax H3</dd></div><div><dt>种子</dt><dd>{{ selectedTask.params.seed }}</dd></div></dl><button v-if="['queued', 'running'].includes(selectedTask.status)" class="btn secondary full-width" :disabled="uiBusy" @click="run('task.cancel', { id: selectedTask.id })">取消任务</button><button v-if="['failed', 'interrupted'].includes(selectedTask.status)" class="btn secondary full-width" :disabled="uiBusy" @click="run('task.retry', { id: selectedTask.id })">重新生成</button><button class="text-button" @click="navigate('tasks')">查看任务详情<PhCaretRight :size="16" /></button><p class="summary-note"><PhInfo :size="16" />参数与版本随作品保存</p></template><div v-else class="summary-empty"><PhListBullets :size="28" /><p>还没有任务</p><span class="muted">生成后，状态会在这里自动更新。</span></div></aside></Transition>
           </div>
+          </template>
         </section>
-        <SecondaryPages v-else :key="page" :page="page" :snapshot="state" :busy="uiBusy" :media-url="mediaUrl" :ui-preferences="uiPreferences" @ui-preferences="updateUiPreferences" @action="run" @create="create" @restore="restore" />
+        <SecondaryPages v-else :key="page" :page="page" :snapshot="state" :busy="uiBusy" :media-url="mediaUrl" :ui-preferences="uiPreferences" @ui-preferences="updateUiPreferences" @action="run" @create="create" @restore="restore" @use-workflow="useWorkflow" />
       </main>
     </div>
     <Transition name="toast" @before-leave="retireSurface" @before-enter="activateSurface" @leave-cancelled="activateSurface" :css="!toastInstant"><div v-if="toast" :data-ui-instant="toastInstant" :class="['toast', { 'toast-error': toastError }]" :role="toastError ? 'alert' : 'status'"><PhWarningCircle v-if="toastError" :size="20" /><PhCheckCircle v-else :size="20" /><span>{{ toast }}</span><button class="text-button" aria-label="关闭提示" @click="toast = ''"><PhX :size="16" /></button></div></Transition>
