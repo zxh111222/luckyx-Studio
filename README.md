@@ -2,7 +2,7 @@
 
 <p align="center"><strong>Windows 本地视频工作流启动器</strong><br />安装环境、管理工作流、生成视频，让创作少一点配置。</p>
 
-<p align="center">v0.1.3 · Windows x64 · Electron + Vue · 本地存储</p>
+<p align="center">v0.1.4 · Windows x64 · Electron + Vue · 本地存储</p>
 
 <p align="center"><a href="#快速开始">快速开始</a> · <a href="#使用教程">使用教程</a> · <a href="#常见问题">常见问题</a> · <a href="#从源码运行">开发与构建</a></p>
 
@@ -10,7 +10,7 @@
 
 ![luckyx. Studio 首页](assets/readme/home.webp)
 
-截图来自 v0.1.3 本地浏览器预览，与桌面版共用界面。预览中禁用实际安装和原生窗口操作；请使用桌面版完成这些步骤。设备、路径与作品为演示环境，不代表所有电脑的生成性能。
+截图来自 v0.1.4 本地浏览器预览，与桌面版共用界面。预览中禁用实际安装和原生窗口操作；请使用桌面版完成这些步骤。设备、路径与作品为演示环境，不代表所有电脑的生成性能。
 
 ## 能做什么
 
@@ -31,10 +31,10 @@
 
 ### 1. 安装启动器
 
-当前交付为本地安装包，尚未发布线上下载链接。在 `dist/v0.1.3/` 中打开：
+当前交付为本地安装包，尚未发布线上下载链接。在 `dist/v0.1.4/` 中打开：
 
 ```text
-luckyx-Studio-Setup-0.1.3-x64.exe
+luckyx-Studio-Setup-0.1.4-x64.exe
 ```
 
 按向导选择安装目录。升级时先退出旧版，再覆盖安装，无需先卸载。安装包目前未签名。
@@ -54,7 +54,7 @@ luckyx-Studio-Setup-0.1.3-x64.exe
 
 确认清单后勾选下载提示，点击 **一键安装并配置**。程序会下载、校验、解压、配置路径并尝试启动与检查引擎。过程中可暂停，重新检查后继续下载。安装目标为所选目录下的 `luckyx-environment`，已有目录不会被覆盖。
 
-![H3 完整安装方案与下载量](assets/readme/setup.webp)
+![安装方案选择与已有环境连接](assets/readme/setup.webp)
 
 只安装基础环境不会下载 H3 权重，也不会直接获得 H3 生成能力。自动安装失败时展开 **手动教程**，处理对应错误后继续，或连接手动安装的环境。
 
@@ -110,6 +110,12 @@ luckyx-Studio-Setup-0.1.3-x64.exe
 ![三种视频改造工作流](assets/readme/transform.webp)
 
 这些流程还需额外的 FunUnion 控制权重，完整 H3 一键安装方案不包含它。目前不会自动生成遮罩，也不提供精确人物身份锁定；改造效果与显存需求仍需试跑确认。
+
+### 调整界面反馈
+
+进入 **设置与诊断 → 界面偏好**，可选择减少动态效果、实色背景和增强对比度。默认跟随系统；键盘操作即时响应。个人工作流每页显示 12 个，较多内容可搜索或翻页。
+
+![界面偏好与路径设置](assets/readme/preferences.webp)
 
 ### 寻找模型和安装教程
 
@@ -210,3 +216,4 @@ tests/          自动化回归测试
 - 引擎与教程：[ComfyUI](https://github.com/Comfy-Org/ComfyUI)、[Windows Portable 指南](https://docs.comfy.org/installation/comfyui_portable_windows)、[MiniMax H3 原生工作流](https://docs.comfy.org/tutorials/video/minimax/minimax-h3-native)。
 - README 信息组织参考：[DeskBox](https://github.com/Tianyu199509/DeskBox)。
 - ComfyUI、模型及第三方组件按各自许可证与使用条件分发；安装包附解压器许可说明。
+
